@@ -7,6 +7,7 @@
 #include <cmath>
 #include <iostream>
 #include <vector>
+#include <iterator>
 
 
 
@@ -19,9 +20,9 @@ then, go back and look at the imgproc tutorials and see ways I can optimize this
 */
 namespace SLAM {
     struct point {
-        point(int pos_x_, int pos_y_, int value_, int padding_) : pos_x(pos_x_), pos_y(pos_y_), value(value_), padding(padding_) {}
-        int pos_x;
-        int pos_y;
+        point(int row_, int col_, int value_, int padding_) : row(row_), col(col_), value(value_), padding(padding_) {}
+        int row;
+        int col;
         int value;
         int padding;
     };
@@ -38,7 +39,7 @@ Mat mat2gray(const cv::Mat& src)
 int main() {
 
     std::string img_path = samples::findFile("blox.jpg");
-    std::string img_path2 = samples::findFile("building.jpg");
+    std::string img_path2 = samples::findFile("chessboard.png");
 
     Mat img = imread(img_path2, IMREAD_GRAYSCALE);
 
@@ -146,15 +147,25 @@ int main() {
     int delta = 0;
     int ddepth = CV_32F;        //16bit signed (short)
     Mat grad_x, grad_y, mag, orient;
+    Sobel(blurred1, grad_x, ddepth, 1, 0, ksize, scale, delta, BORDER_DEFAULT);
+    Sobel(blurred1, grad_y, ddepth, 0, 1, ksize, scale, delta, BORDER_DEFAULT);
+    magnitude(grad_x, grad_y, mag);
+    phase(grad_x, grad_y, orient, true);
     
     //Now, further filter the keypoints using the Hessian
     Mat Hessian = Mat::zeros(2,2, CV_32F);                 //2,2 matrix filled w/ 0.
     int extrema = 0;
     int windowSize2 = 16;
-    int padding2 = (windowSize2)/2;
+    int padding2 = (windowSize2/2)+1;
+    int sigma = 1.5*3;                  //later, update this to by 1.5x the scale of the keypoint.
+    std::vector<SLAM::point> reducedKeypoints;
 
     Mat paddedImg2;
     cv::copyMakeBorder(img, paddedImg2, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
+    Mat paddedMag;
+    cv::copyMakeBorder(mag, paddedMag, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
+    Mat paddedOrient;
+    cv::copyMakeBorder(orient, paddedOrient, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
     //float max_angle = -1000.0f;
     //float min_angle = 1000.0f;
     for (const auto& keypoint : keypoints) {
@@ -162,8 +173,8 @@ int main() {
         float Ix2 = 0;
         float Iy2 = 0;
         float IxIy = 0;
-        int x = keypoint.pos_x;
-        int y = keypoint.pos_y;
+        int x = keypoint.col;
+        int y = keypoint.row;
 
         //iterate in a window around the keypoint
         for (int u = y - keypoint.padding; u < y + keypoint.padding; u++) {
@@ -192,34 +203,76 @@ int main() {
             //the best way to do it would be to take a subsection of the image around that pixel and then perform magnitude, orientation, etc on it.
             //create a 16x16 window around the current pixel.
             Mat window (paddedImg2, Rect(x, y, windowSize2, windowSize2));
-            Mat blur;
+            Mat windowMag (paddedMag, Rect(x, y, windowSize2, windowSize2));
+            Mat windowOrient (paddedOrient, Rect(x, y, windowSize2, windowSize2));
+
+            Mat magWeighted;
             //note, it might be faster to calculate the orientation & magnitude using just the img window
-            GaussianBlur(window, blur, Size(3,3), 0, 0, BORDER_DEFAULT);
-            Sobel(blur, grad_x, ddepth, 1, 0, ksize, scale, delta, BORDER_DEFAULT);
-            Sobel(blur, grad_y, ddepth, 0, 1, ksize, scale, delta, BORDER_DEFAULT);
-            magnitude(grad_x, grad_y, mag);
-            phase(grad_x, grad_y, orient, true);
+            GaussianBlur(windowMag, magWeighted, Size(0, 0), sigma, 0, BORDER_DEFAULT);        //note: the scale used here will need to adapt to the scale of the DoG Octave.
 
+            
+
+            /*
+                Now, create a histrogram with this data
+                36 bins for orientation
+                weight each point w/ a Gaussian window of 1.5 sigma
+                --> this could be done by taking a gaussian function the size of the image region (16x16) and multiplying the values by the gaussian value
+                    at that point, then dividing the values by the highest value of the gaussian (1).
+                
+                //How are the values of the bins decided? Well, the magnitude tells the strength at the point of the angle
+                //so the magnitude image will need to be weighted
+                //But, once we have the magnitudes weighted, how do they add to the histogram?
+
+                //so it seems the histogram doesn't just count the number of angles which appear at that angle
+                //it also takes into account the total magnitude at that angle.
+            */
             //adding {} is refered to as 'value-initialization' and sets all values to 0.
-            int histo[36]{};
 
-            
-            
-            //Now, create a histrogram with this data
-            //36 bins for orientation
-            //weight each point w/ a Gaussian window of 1.5 sigma
-            //
+            /*
+            */
+            std::vector<float> histo(36, 0.0f);
+            //float histo[36]{};
+            for (int i = 0; i < window.rows; ++i) {
+                for (int j = 0; j < window.cols; ++j) {
+                    int index = (int)(windowOrient.at<float>(i,j) * 0.1f);      //angle between [0-360] / 10, int
+                    histo.at(index) += magWeighted.at<float>(i,j);
+                }
+            }
 
-            //DoG1.at<uchar>(keypoint.pos_x, keypoint.pos_y) = (uchar)255;
+            std::vector<float>::iterator result;
+            result = max_element(histo.begin(), histo.end());
+            float maxPeak = *result;
+            float peakThreshold = maxPeak * 0.8f;
+            int index = std::distance(histo.begin(), result);
+
+            //std::cout << "highest orientation peak at angle: " << index*10 << std::endl;
+            //std::cout << "value of max peak:  " << maxPeak << std::endl;
+            
+
+            //now, read through the histrogram and find peaks.
+            for (int k = 0; k < histo.size(); ++k) {
+                if (histo.at(k) > peakThreshold) {
+                    //std::cout << "peak found with value: " << histo.at(k) << std::endl;
+                    //another keypoint should be added if an additional peak is found.
+                    //note, verify this!!
+                    reducedKeypoints.emplace_back( SLAM::point{y,x,0,0});
+                    DoG1.at<uchar>(y,x) = (uchar)255;       //note, y is row, x is col.
+                }
+            }
+            
+
+
+            //DoG1.at<uchar>(keypoint.rows, keypoint.cols) = (uchar)255;
+            //break;
         }
     }
 
-    std::cout << "Number of keypoints after removing points on edges: " << extrema << std::endl;
+    std::cout << "Number of keypoints after edge orientation: " << reducedKeypoints.size() << std::endl;
 
     //imshow("SobelX", grad_x);
     //imshow("SobelY", grad_y);
-    imshow("Magnitude", mat2gray(mag));
-    imshow("Orientation",mat2gray(orient));
+    //imshow("Magnitude", mat2gray(mag));
+    //imshow("Orientation",mat2gray(orient));
     imshow("DoG1", DoG1);
     int k = waitKey(0);
 
