@@ -8,6 +8,7 @@
 #include <iostream>
 #include <vector>
 #include <iterator>
+#include "rotation.h"
 
 
 
@@ -41,7 +42,7 @@ int main() {
     std::string img_path = samples::findFile("blox.jpg");
     std::string img_path2 = samples::findFile("chessboard.png");
 
-    Mat img = imread(img_path2, IMREAD_GRAYSCALE);
+    Mat img = imread(img_path, IMREAD_GRAYSCALE);
 
     //now that image is loaded, blur it.
     Mat blurred1;
@@ -122,7 +123,7 @@ int main() {
                 Mat B = A*A_T;              //A (3x1) * A^T (1x3) = 3x3 matrix.
                 Mat B_inverse = -(B.inv());
                 
-                Mat z_hat = B_inverse * A;        //3x3 * 3x1 = 3x1
+                Mat z_hat = B_inverse * A;        //3x3 * 3x1 = 3x1 vector
                 //std::cout << "z_hat" << std::endl << z_hat << std::endl;
                 
                 Mat dog_zhat_mat = ((float)this_pixel / 255.0f) + 0.5f * A_T * z_hat;
@@ -156,7 +157,7 @@ int main() {
     Mat Hessian = Mat::zeros(2,2, CV_32F);                 //2,2 matrix filled w/ 0.
     int extrema = 0;
     int windowSize2 = 16;
-    int padding2 = (windowSize2/2)+1;
+    int padding2 = windowSize2/2;
     int sigma = 1.5*3;                  //later, update this to by 1.5x the scale of the keypoint.
     std::vector<SLAM::point> reducedKeypoints;
 
@@ -166,8 +167,7 @@ int main() {
     cv::copyMakeBorder(mag, paddedMag, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
     Mat paddedOrient;
     cv::copyMakeBorder(orient, paddedOrient, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
-    //float max_angle = -1000.0f;
-    //float min_angle = 1000.0f;
+
     for (const auto& keypoint : keypoints) {
         //at each keypoint, accumulate the derivatives
         float Ix2 = 0;
@@ -209,8 +209,6 @@ int main() {
             Mat magWeighted;
             //note, it might be faster to calculate the orientation & magnitude using just the img window
             GaussianBlur(windowMag, magWeighted, Size(0, 0), sigma, 0, BORDER_DEFAULT);        //note: the scale used here will need to adapt to the scale of the DoG Octave.
-
-            
 
             /*
                 Now, create a histrogram with this data
@@ -255,8 +253,11 @@ int main() {
                     //std::cout << "peak found with value: " << histo.at(k) << std::endl;
                     //another keypoint should be added if an additional peak is found.
                     //note, verify this!!
-                    reducedKeypoints.emplace_back( SLAM::point{y,x,0,0});
-                    DoG1.at<uchar>(y,x) = (uchar)255;       //note, y is row, x is col.
+
+                    //also, add the dominant orientation to the keypoint info
+                    //here, k*10 gives the angle at that point. Additional peaks at different angles will generate new keypoints.
+                    reducedKeypoints.emplace_back( SLAM::point{y,x,k*10,0});
+                    //DoG1.at<uchar>(y,x) = (uchar)255;       //note, y is row, x is col.
                 }
             }
             
@@ -268,6 +269,105 @@ int main() {
     }
 
     std::cout << "Number of keypoints after edge orientation: " << reducedKeypoints.size() << std::endl;
+
+
+    //Now that we have the appropriately filtered keypoints, which have a dominant orientation..
+    //iterate through each keypoint, take it's primary orientation and rotate a box
+    //sample the neighborhood included in the rotated box.
+
+    //so... how do we rotate a portion of an image and iterate over that?
+    int windowSize3 = 16;
+    int maxPadding = ceil(float(windowSize) * 1.414f / 2.0f);
+    std::vector<Point2i> rotatedPoints;
+    Point2i currentPoint;
+    Mat paddedImg3;
+    Mat paddedMag3;
+    Mat paddedOrient3;
+    copyMakeBorder(img, paddedImg3, maxPadding, maxPadding, maxPadding, maxPadding, BORDER_REPLICATE);
+    copyMakeBorder(mag, paddedMag3, maxPadding, maxPadding, maxPadding, maxPadding, BORDER_REPLICATE);
+    copyMakeBorder(orient, paddedOrient3, maxPadding, maxPadding, maxPadding, maxPadding, BORDER_REPLICATE);
+    std::vector<std::vector<float>> featureDescriptors_vec;
+
+    for (const auto& keypoint : reducedKeypoints) {
+        std::vector<float> featureDescriptor;      //maybe should just make this an array of floats.
+        featureDescriptor.reserve(128);
+        //if we need to use these coordinates (of the real image) multiple times, then it might be best to get those instead.
+        rotatedPoints = SLAM::Rotation::getRotatedWindowPoints(paddedImg3, Point2i(keypoint.col + maxPadding, keypoint.row + maxPadding), windowSize3, keypoint.value);
+        //assume given region is correct. Now get the img, gradient magnitude & orientation of this window.
+        Mat imgROI = Mat::zeros(Size(windowSize3, windowSize3), paddedImg3.type());
+        Mat magROI = Mat::zeros(Size(windowSize3, windowSize3), paddedMag3.type());
+        Mat orientROI = Mat::zeros(Size(windowSize3, windowSize3), paddedOrient3.type());
+
+
+        
+        for (int i = 0; i < imgROI.rows; ++i) {
+            for (int j = 0; j < imgROI.cols; ++j) {
+                currentPoint = rotatedPoints[i * imgROI.rows + j];
+                imgROI.at<uchar>(i,j) = paddedImg3.at<uchar>(currentPoint.y, currentPoint.x);
+                magROI.at<uchar>(i,j) = paddedMag3.at<uchar>(currentPoint.y, currentPoint.x);
+                orientROI.at<uchar>(i,j) = paddedOrient3.at<uchar>(currentPoint.y, currentPoint.x);
+            }
+        }
+
+        Mat magWeighted;
+        //TODO:
+        // The magnitudes are further weighted by a Gaussian function with sigma  equal to one half the width of the descriptor window.
+        // The descriptor then becomes a vector of all the values of these histograms
+        GaussianBlur(magROI, magWeighted, Size(0, 0), sigma, 0, BORDER_DEFAULT); 
+
+        imshow("rotated img ROI", imgROI);
+        imshow("ROI Magnitude", mat2gray(magROI));
+        imshow("ROI Orientation",mat2gray(orientROI));
+
+
+        //then, create a histrogram of gradients for each 4x4 section of the ROI
+        //the histogram can be performed after assignment.
+        int histoSize = 8;
+        int angleThresh = 360 / histoSize;
+        
+        for (int h = 1; h < 5; h++) {
+            std::vector<float> histo(8, 0.0f);
+            histo.reserve(16);
+            for (int i = 0; i < 4; i++) {
+                for (int j = 0; j < 4; j++) {
+                    //this finding of the index uses nearest int indexing, but the SIFT paper uses tri-linear interpolation (p.15).
+                    //"to avoid all boundary affects..."
+                    int index = int(orientROI.at<float>(i*h,j*h)) / angleThresh;      //angle between [0-360], need it grouped by 45 degrees
+                    histo.at(index) += magROI.at<float>(i*h,j*h);
+                }
+            }
+            for (const auto& val : histo) {
+                featureDescriptor.emplace_back(val);
+            }
+            
+            //each time a block is done, add that histrogram of 8 values to another vector
+        }
+        //Now that the 128x1 featureDescriptor is complete, normalize it by the max value.
+        float maxPeak = *max_element(featureDescriptor.begin(), featureDescriptor.end());
+        transform(featureDescriptor.begin(), featureDescriptor.end(), featureDescriptor.begin(), [maxPeak](float& c){ return c/maxPeak; });
+
+        //once normalized, reduce the influence of large gradient magnitudes, by thresholding the values in the unit feature vector
+        //we do this to reduce the influence of large magnitudes, while emphasizing the distribution of orientations.
+        float threshold = 0.2f;
+        transform(featureDescriptor.begin(), featureDescriptor.end(), featureDescriptor.begin(), [threshold](float& c)
+        { 
+            c = min(c, threshold);
+        });
+
+        //then, renormalize again.
+        maxPeak = *max_element(featureDescriptor.begin(), featureDescriptor.end());
+        transform(featureDescriptor.begin(), featureDescriptor.end(), featureDescriptor.begin(), [maxPeak](float& c){ return c/maxPeak; });
+
+        featureDescriptors_vec.emplace_back(featureDescriptor);
+        
+
+
+
+        //append the gradients together.
+        break;
+    }
+
+
 
     //imshow("SobelX", grad_x);
     //imshow("SobelY", grad_y);
