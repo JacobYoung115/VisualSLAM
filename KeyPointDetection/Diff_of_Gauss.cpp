@@ -27,7 +27,7 @@ namespace SLAM {
         int value;
         int padding;
     };
-}
+}   //namespace SLAM
 
 Mat mat2gray(const cv::Mat& src)
 {
@@ -37,12 +37,59 @@ Mat mat2gray(const cv::Mat& src)
     return dst;
 }
 
+void DrawBoundingBox(Mat& image, const std::vector<Point>& positions, Scalar color = Scalar(255)) {
+    std::vector<int> x_positions;
+    std::vector<int> y_positions;
+    x_positions.reserve(positions.size());
+    y_positions.reserve(positions.size());
+    for (const auto& rPoint : positions) {
+        x_positions.emplace_back(rPoint.x);
+        y_positions.emplace_back(rPoint.y);
+    }
+
+    std::vector<int>::iterator result;
+    int index = 0;
+
+    //Drawing the bounding boxes is working.
+    //min X
+    result = min_element(x_positions.begin(), x_positions.end());
+    index = std::distance(x_positions.begin(), result);
+    Point p1 = Point(x_positions.at(index), y_positions.at(index));
+
+    //max X
+    result = max_element(x_positions.begin(), x_positions.end());
+    index = std::distance(x_positions.begin(), result);
+    Point p2 = Point(x_positions.at(index), y_positions.at(index));
+
+    //min Y
+    result = min_element(y_positions.begin(), y_positions.end());
+    index = std::distance(y_positions.begin(), result);
+    Point p3 = Point(x_positions.at(index), y_positions.at(index));
+
+    //max Y
+    result = max_element(y_positions.begin(), y_positions.end());
+    index = std::distance(y_positions.begin(), result);
+    Point p4 = Point(x_positions.at(index), y_positions.at(index));
+
+    //now draw lines between these 4 points.
+    int thickness = 2;
+    int lineType = LINE_8;
+
+    line(image, p1, p3, color, thickness, lineType);
+    line(image, p3, p2, color, thickness, lineType);
+    line(image, p2, p4, color, thickness, lineType);
+    line(image, p4, p1, color, thickness, lineType);
+}
+
 int main() {
 
-    std::string img_path = samples::findFile("blox.jpg");
+    std::string img_path = samples::findFile("building.jpg");
     std::string img_path2 = samples::findFile("chessboard.png");
 
-    Mat img = imread(img_path, IMREAD_GRAYSCALE);
+    Mat img_color = imread(img_path, IMREAD_COLOR);
+    Mat img;
+    cvtColor(img_color, img, COLOR_BGR2GRAY);
+    // = imread(img_path, IMREAD_GRAYSCALE);
 
     //now that image is loaded, blur it.
     Mat blurred1;
@@ -232,7 +279,9 @@ int main() {
             //float histo[36]{};
             for (int i = 0; i < window.rows; ++i) {
                 for (int j = 0; j < window.cols; ++j) {
-                    int index = (int)(windowOrient.at<float>(i,j) * 0.1f);      //angle between [0-360] / 10, int
+                    float orientation = windowOrient.at<float>(i,j);
+                    //float degrees = orientation * 360;
+                    int index = (int)(orientation * 0.1f);      //angle between [0-360] / 10, int
                     histo.at(index) += magWeighted.at<float>(i,j);
                 }
             }
@@ -255,9 +304,21 @@ int main() {
                     //note, verify this!!
 
                     //also, add the dominant orientation to the keypoint info
+                    int angle = k * 10;
                     //here, k*10 gives the angle at that point. Additional peaks at different angles will generate new keypoints.
-                    reducedKeypoints.emplace_back( SLAM::point{y,x,k*10,0});
+                    reducedKeypoints.emplace_back( SLAM::point{y,x,angle,0});
                     //DoG1.at<uchar>(y,x) = (uchar)255;       //note, y is row, x is col.
+
+                    //draw a circle around each reduced keypoint
+                    int radius = 9;
+                    Point center(x,y);
+                    Point rotationEdge(center.x+radius,center.y+radius);        //position, then rotate.
+                    rotationEdge = SLAM::Rotation::rotate_pt_CCW(rotationEdge, center, angle);     //need to ensure this aligns with the later functions.
+                    circle(img_color, center, 9, Scalar(0,255,255));
+
+                    //it would also be good to draw the rotation direction as a vector.
+                    line(img_color, center, rotationEdge, Scalar(0,255,255));
+
                 }
             }
             
@@ -298,14 +359,17 @@ int main() {
         Mat magROI = Mat::zeros(Size(windowSize3, windowSize3), paddedMag3.type());
         Mat orientROI = Mat::zeros(Size(windowSize3, windowSize3), paddedOrient3.type());
 
-
+        DrawBoundingBox(paddedImg3, rotatedPoints);
         
         for (int i = 0; i < imgROI.rows; ++i) {
             for (int j = 0; j < imgROI.cols; ++j) {
+
+                //TODO: Be careful here.. there was a segmentation fault, I swaped the x & y's & that seemed to
+                //made the error go away..
                 currentPoint = rotatedPoints[i * imgROI.rows + j];
-                imgROI.at<uchar>(i,j) = paddedImg3.at<uchar>(currentPoint.y, currentPoint.x);
-                magROI.at<uchar>(i,j) = paddedMag3.at<uchar>(currentPoint.y, currentPoint.x);
-                orientROI.at<uchar>(i,j) = paddedOrient3.at<uchar>(currentPoint.y, currentPoint.x);
+                imgROI.at<uchar>(i,j) = paddedImg3.at<uchar>(currentPoint.x, currentPoint.y);
+                magROI.at<float>(i,j) = paddedMag3.at<float>(currentPoint.x, currentPoint.y);
+                orientROI.at<float>(i,j) = paddedOrient3.at<float>(currentPoint.x, currentPoint.y);
             }
         }
 
@@ -315,16 +379,19 @@ int main() {
         // The descriptor then becomes a vector of all the values of these histograms
         GaussianBlur(magROI, magWeighted, Size(0, 0), sigma, 0, BORDER_DEFAULT); 
 
+        /*
         imshow("rotated img ROI", imgROI);
         imshow("ROI Magnitude", mat2gray(magROI));
         imshow("ROI Orientation",mat2gray(orientROI));
+        */
 
 
         //then, create a histrogram of gradients for each 4x4 section of the ROI
         //the histogram can be performed after assignment.
         int histoSize = 8;
         int angleThresh = 360 / histoSize;
-        
+
+         //TODO: This is having issues w/ out of bounds access.
         for (int h = 1; h < 5; h++) {
             std::vector<float> histo(8, 0.0f);
             histo.reserve(16);
@@ -332,7 +399,8 @@ int main() {
                 for (int j = 0; j < 4; j++) {
                     //this finding of the index uses nearest int indexing, but the SIFT paper uses tri-linear interpolation (p.15).
                     //"to avoid all boundary affects..."
-                    int index = int(orientROI.at<float>(i*h,j*h)) / angleThresh;      //angle between [0-360], need it grouped by 45 degrees
+                    float orientation = orientROI.at<float>(i*h,j*h);
+                    int index = orientation / angleThresh;      //angle between [0-360], need it grouped by 45 degrees
                     histo.at(index) += magROI.at<float>(i*h,j*h);
                 }
             }
@@ -343,27 +411,31 @@ int main() {
             //each time a block is done, add that histrogram of 8 values to another vector
         }
         //Now that the 128x1 featureDescriptor is complete, normalize it by the max value.
-        float maxPeak = *max_element(featureDescriptor.begin(), featureDescriptor.end());
-        transform(featureDescriptor.begin(), featureDescriptor.end(), featureDescriptor.begin(), [maxPeak](float& c){ return c/maxPeak; });
 
+
+        
+        float maxPeak = *max_element(featureDescriptor.begin(), featureDescriptor.end());
+        
+        transform(featureDescriptor.begin(), featureDescriptor.end(), featureDescriptor.begin(), [maxPeak](float& c){ return c/maxPeak; });
+        
         //once normalized, reduce the influence of large gradient magnitudes, by thresholding the values in the unit feature vector
         //we do this to reduce the influence of large magnitudes, while emphasizing the distribution of orientations.
         float threshold = 0.2f;
         transform(featureDescriptor.begin(), featureDescriptor.end(), featureDescriptor.begin(), [threshold](float& c)
         { 
-            c = min(c, threshold);
+            return min(c, threshold);
         });
+        
 
         //then, renormalize again.
         maxPeak = *max_element(featureDescriptor.begin(), featureDescriptor.end());
         transform(featureDescriptor.begin(), featureDescriptor.end(), featureDescriptor.begin(), [maxPeak](float& c){ return c/maxPeak; });
 
-        featureDescriptors_vec.emplace_back(featureDescriptor);
-        
-
-
-
         //append the gradients together.
+        featureDescriptors_vec.emplace_back(featureDescriptor);
+
+        
+        //final step is graphing and comparing two images with each other.
         break;
     }
 
@@ -373,7 +445,9 @@ int main() {
     //imshow("SobelY", grad_y);
     //imshow("Magnitude", mat2gray(mag));
     //imshow("Orientation",mat2gray(orient));
-    imshow("DoG1", DoG1);
+    //imshow("DoG1", DoG1);
+    imshow("Img", img_color);
+    imshow("Padded img w/ lines", paddedImg3);
     int k = waitKey(0);
 
     if (k == 's') {
