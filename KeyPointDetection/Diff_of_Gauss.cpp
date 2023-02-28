@@ -27,6 +27,15 @@ namespace SLAM {
         int value;
         int padding;
     };
+
+    struct imgRegion {
+        imgRegion(int minRows_, int minCols_, int maxRows_, int maxCols_) : minRows(minRows_), minCols(minCols_), maxRows(maxRows_), maxCols(maxCols_) {}
+        int minRows;
+        int minCols;
+        int maxRows;
+        int maxCols;
+    };
+
 }   //namespace SLAM
 
 Mat mat2gray(const cv::Mat& src)
@@ -35,6 +44,54 @@ Mat mat2gray(const cv::Mat& src)
     normalize(src, dst, 0.0, 255.0, cv::NORM_MINMAX, CV_8U);
 
     return dst;
+}
+
+//Use the Hessian structure matrix to filter out keypoints which correspond only to edges.
+float computeEdgeResponse(const SLAM::point& keypoint, Mat& grad_x, Mat& grad_y) {
+    //at each keypoint, accumulate the derivatives
+    float Ix2 = 0;
+    float Iy2 = 0;
+    float IxIy = 0;
+    int x = keypoint.col;
+    int y = keypoint.row;
+    Mat Hessian = Mat::zeros(2,2, CV_32F);                 //2,2 matrix filled w/ 0.
+
+    //iterate in a window around the keypoint
+    for (int u = y - keypoint.padding; u < y + keypoint.padding; u++) {
+        for (int v = x - keypoint.padding; v < x + keypoint.padding; v++) {
+            Ix2 += grad_x.at<float>(u,v) * grad_x.at<float>(u,v);
+            Iy2 += grad_y.at<float>(u,v) * grad_y.at<float>(u,v);
+            IxIy += grad_x.at<float>(u,v) * grad_y.at<float>(u,v);
+        }
+    }
+    
+    Hessian.at<float>(0,0) = Ix2;
+    Hessian.at<float>(0,1) = IxIy;
+    Hessian.at<float>(1,0) = IxIy;
+    Hessian.at<float>(1,1) = Iy2;
+    float det = determinant(Hessian);
+    float tr = trace(Hessian)[0];        //trace returns a scalar, which is 4 doubles.
+    float response = (tr*tr) / det;
+    return response;
+}
+
+//region argument is for using an additional loop for multiple image patches.
+std::vector<float> orientationHistogram(int size, SLAM::imgRegion region, Mat& magWeighted, Mat& windowOrient) {
+    std::vector<float> histo(size, 0.0f);
+    float reductionCoeff = float(size) / 360.0f;
+
+    histo.reserve(size);
+    //this finding of the index uses nearest int indexing, but the SIFT paper uses tri-linear interpolation (p.15).
+    //"to avoid all boundary affects..."
+    for (int i = region.minRows; i < region.maxRows; ++i) {
+        for (int j = region.minCols; j < region.maxCols; ++j) {
+            float orientation = windowOrient.at<float>(i,j);
+            int index = (int)(orientation * reductionCoeff);      //angle between [0-360] / 10, int
+            histo.at(index) += magWeighted.at<float>(i,j);
+        }
+    }
+
+    return histo;
 }
 
 void DrawBoundingBox(Mat& image, const std::vector<Point>& positions, Scalar color = Scalar(255)) {
@@ -201,12 +258,12 @@ int main() {
     phase(grad_x, grad_y, orient, true);
     
     //Now, further filter the keypoints using the Hessian
-    Mat Hessian = Mat::zeros(2,2, CV_32F);                 //2,2 matrix filled w/ 0.
     int extrema = 0;
     int windowSize2 = 16;
     int padding2 = windowSize2/2;
     int sigma = 1.5*3;                  //later, update this to by 1.5x the scale of the keypoint.
     std::vector<SLAM::point> reducedKeypoints;
+    
 
     Mat paddedImg2;
     cv::copyMakeBorder(img, paddedImg2, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
@@ -216,29 +273,9 @@ int main() {
     cv::copyMakeBorder(orient, paddedOrient, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
 
     for (const auto& keypoint : keypoints) {
-        //at each keypoint, accumulate the derivatives
-        float Ix2 = 0;
-        float Iy2 = 0;
-        float IxIy = 0;
         int x = keypoint.col;
         int y = keypoint.row;
-
-        //iterate in a window around the keypoint
-        for (int u = y - keypoint.padding; u < y + keypoint.padding; u++) {
-            for (int v = x - keypoint.padding; v < x + keypoint.padding; v++) {
-                Ix2 += grad_x.at<float>(u,v) * grad_x.at<float>(u,v);
-                Iy2 += grad_y.at<float>(u,v) * grad_y.at<float>(u,v);
-                IxIy += grad_x.at<float>(u,v) * grad_y.at<float>(u,v);
-            }
-        }
-        
-        Hessian.at<float>(0,0) = Ix2;
-        Hessian.at<float>(0,1) = IxIy;
-        Hessian.at<float>(1,0) = IxIy;
-        Hessian.at<float>(1,1) = Iy2;
-        float det = determinant(Hessian);
-        float tr = trace(Hessian)[0];        //trace returns a scalar, which is 4 doubles.
-        float response = (tr*tr) / det;
+        float response = computeEdgeResponse(keypoint, grad_x, grad_y);
         float r = 10.0f;
         float threshold = ((r + 1.0f) * (r + 1.0f)) / r;
 
@@ -275,16 +312,12 @@ int main() {
 
             /*
             */
-            std::vector<float> histo(36, 0.0f);
-            //float histo[36]{};
-            for (int i = 0; i < window.rows; ++i) {
-                for (int j = 0; j < window.cols; ++j) {
-                    float orientation = windowOrient.at<float>(i,j);
-                    //float degrees = orientation * 360;
-                    int index = (int)(orientation * 0.1f);      //angle between [0-360] / 10, int
-                    histo.at(index) += magWeighted.at<float>(i,j);
-                }
-            }
+
+            //Calculates a histogram of directions. Size controls the amount of degrees between each bin.
+            //ex: size = 36 --> 360 / 36  --> 36 bins each of 10 degrees.
+            int size = 36;
+            SLAM::imgRegion region = {0, 0, window.rows, window.cols};
+            std::vector<float> histo = orientationHistogram(size, region, magWeighted, windowOrient);
 
             std::vector<float>::iterator result;
             result = max_element(histo.begin(), histo.end());
@@ -335,10 +368,10 @@ int main() {
     //Now that we have the appropriately filtered keypoints, which have a dominant orientation..
     //iterate through each keypoint, take it's primary orientation and rotate a box
     //sample the neighborhood included in the rotated box.
-
-    //so... how do we rotate a portion of an image and iterate over that?
     int windowSize3 = 16;
-    int maxPadding = ceil(float(windowSize) * 1.414f / 2.0f);
+    //1.414f is sqrt(2), which is used to pad an image according to the 
+    //hypotaneuse of a square window, rather than by width & height.
+    int maxPadding = ceil(float(windowSize) * 1.414f / 2.0f);       
     std::vector<Point2i> rotatedPoints;
     Point2i currentPoint;
     Mat paddedImg3;
@@ -390,27 +423,27 @@ int main() {
         //the histogram can be performed after assignment.
         int histoSize = 8;
         int angleThresh = 360 / histoSize;
-
-         //TODO: This is having issues w/ out of bounds access.
-        for (int h = 1; h < 5; h++) {
-            std::vector<float> histo(8, 0.0f);
-            histo.reserve(16);
-            for (int i = 0; i < 4; i++) {
-                for (int j = 0; j < 4; j++) {
-                    //this finding of the index uses nearest int indexing, but the SIFT paper uses tri-linear interpolation (p.15).
-                    //"to avoid all boundary affects..."
-                    float orientation = orientROI.at<float>(i*h,j*h);
-                    int index = orientation / angleThresh;      //angle between [0-360], need it grouped by 45 degrees
-                    histo.at(index) += magROI.at<float>(i*h,j*h);
-                }
-            }
+        int subregion = 4;
+        SLAM::imgRegion region = {0,0,subregion,subregion};
+        while (region.minRows < windowSize3) {
+            std::vector<float> histo = orientationHistogram(histoSize, region, magWeighted, orientROI);
             for (const auto& val : histo) {
                 featureDescriptor.emplace_back(val);
             }
-            
+
+            region.maxCols += subregion;
+            region.minCols += subregion;
+
+            if (region.minCols == windowSize3) {
+                region.maxRows += subregion;
+                region.minRows += subregion;
+                region.minCols = 0;
+                region.maxCols = subregion;
+            }         
             //each time a block is done, add that histrogram of 8 values to another vector
         }
         //Now that the 128x1 featureDescriptor is complete, normalize it by the max value.
+        std::cout << "Feature descriptor size: " << featureDescriptor.size() << std::endl;
 
 
         
