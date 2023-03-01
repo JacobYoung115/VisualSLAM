@@ -138,6 +138,194 @@ void DrawBoundingBox(Mat& image, const std::vector<Point>& positions, Scalar col
     line(image, p4, p1, color, thickness, lineType);
 }
 
+void DrawKeypoint(Mat& img, Point center, int radius=3, Scalar color = Scalar(0,255,255), int angle=0, bool drawAngle=true) {
+    circle(img, center, radius, color);
+
+    if (drawAngle) {
+        Point rotationEdge(center.x+radius,center.y+radius);        //position, then rotate.
+        rotationEdge = SLAM::Rotation::rotate_pt_CCW(rotationEdge, center, angle);     //need to ensure this aligns with the later functions.
+        
+        //it would also be good to draw the rotation direction as a vector.
+        line(img, center, rotationEdge, color);
+    }
+}
+
+//It filters out additional points by interpolating between positions and scale space to approximate a 3D surface.
+//We do this with the derivative of the pixel w/ respect to x,y and scale directions.
+//effectively this means taking the difference of points in:
+//  x-1,        x+1 direction
+//  y-1,        y+1 direction
+//  adjacent-1, adjacent+1 direction
+void FeaturePointLocalization(std::vector<Mat>& dogs_padded, std::vector<SLAM::point>& keypoints, int i, int j, int this_pixel, int padding) {
+    int d_x = (int)dogs_padded[1].at<uchar>(i,j-1) - (int)dogs_padded[1].at<uchar>(i,j+1);
+    int d_y = (int)dogs_padded[1].at<uchar>(i-1,j) - (int)dogs_padded[1].at<uchar>(i + 1,j);
+    int d_scale = (int)dogs_padded[0].at<uchar>(i,j) - (int)dogs_padded[2].at<uchar>(i,j);
+
+    //Now, Perform 'Feature Point Localization'
+    //Note that in the SIFT paper, they consider intensity values less than 0.03 in the scale of [0-1] to be low contrast
+    //0.03 * 255 = 7.65
+    cv::Vec3f A_vec((float)d_x / 255.0f, (float)d_y / 255.0f, (float)d_scale / 255.0f);
+    cv::Mat A = Mat(A_vec);     //3x1
+    cv::Mat A_T;                                                            
+    transpose(A, A_T);          //1x3
+    
+    Mat B = A*A_T;              //A (3x1) * A^T (1x3) = 3x3 matrix.
+    Mat B_inverse = -(B.inv());
+    Mat z_hat = B_inverse * A;        //3x3 * 3x1 = 3x1 vector
+    Mat dog_zhat_mat = ((float)this_pixel / 255.0f) + 0.5f * A_T * z_hat;
+
+    float dog_zhat = dog_zhat_mat.at<float>(0,0);
+    
+    if (dog_zhat > 0.03f) {     //if the value is above 0.03, then it is a high enough contrast point.
+        keypoints.emplace_back( SLAM::point{i,j,(int)(dog_zhat * 255), padding});
+    }
+}
+
+//aka Scale Space Extrema Detection
+std::vector<SLAM::point> initialKeypointDetection(std::vector<Mat>& dogs, int windowSize) {
+    std::vector<SLAM::point> keypoints;
+
+    int padding = (windowSize-1) / 2;
+    std::vector<Mat> dogs_padded;
+    for (const auto& dog : dogs) {
+        Mat paddedDoG;
+        copyMakeBorder(dog, paddedDoG, padding, padding, padding, padding, BORDER_REPLICATE);
+        dogs_padded.emplace_back(std::move(paddedDoG));        //not sure if this is adding the refence to the old image or copying a new image in.
+    }
+
+    //now compare adjacent DoGs to obtain 26 neighbors dogs[i-1], dogs[i], dogs[i+1]
+    //add padding of size 'kernelsize' to the image
+    for (int i = padding; i < dogs[0].rows; i += windowSize) {
+        for (int j = padding; j < dogs[0].cols; j += windowSize) {
+            std::vector<int> neighbors;
+            int this_pixel = (int)dogs_padded[1].at<uchar>(i,j);
+            
+            //now take a window of the surrounding 26 neighbors 3x3 neighbors in adjacent smoothing directions.
+            for (int u = i-padding; u < i+padding; u++) {
+                for (int v = j - padding; v < j+padding; v++) {
+                    //this is the window. add all neighbbors to
+                    neighbors.emplace_back((int)dogs_padded[0].at<uchar>(u,v));
+                    neighbors.emplace_back((int)dogs_padded[1].at<uchar>(u,v));
+                    neighbors.emplace_back((int)dogs_padded[2].at<uchar>(u,v));
+                }
+            }
+
+            int min = *min_element(neighbors.begin(), neighbors.end());
+            int max = *max_element(neighbors.begin(), neighbors.end());
+
+            
+            //if pixel is a local max or minima, intepolate the extreme in x,y & scale space.
+            if (this_pixel == min || this_pixel == max) {
+                //https://www.youtube.com/watch?v=LXk4A24V8mQ
+                FeaturePointLocalization(dogs_padded, keypoints, i, j, this_pixel, padding);
+            }
+        }
+    }
+
+    return keypoints;
+}
+
+Struct processedImage {
+    Mat& image;
+    Mat& blurred;
+    Mat& magnitude;
+    Mat& orientation;
+}
+
+
+//keypoints are first filtered by removing any points which correspond to edges or flat regions.
+std::vector<SLAM::point> filterKeypoints(Mat& img, Mat& blurred, std::vector<SLAM::point>& keypoints) {
+    //For DoG we also need the deriv in x&y directions, to additionally calculate the gradient direction
+    //derivs
+    int ksize = 1;
+    int scale = 1;
+    int delta = 0;
+    int ddepth = CV_32F;        //16bit signed (short)
+    Mat grad_x, grad_y, mag, orient;
+    Sobel(blurred, grad_x, ddepth, 1, 0, ksize, scale, delta, BORDER_DEFAULT);
+    Sobel(blurred, grad_y, ddepth, 0, 1, ksize, scale, delta, BORDER_DEFAULT);
+    magnitude(grad_x, grad_y, mag);
+    phase(grad_x, grad_y, orient, true);
+    
+    //Now, further filter the keypoints using the Hessian
+    int extrema = 0;
+    int windowSize2 = 16;
+    int padding2 = windowSize2/2;
+    int sigma = 1.5*windowSize;                  //later, update this to by 1.5x the scale of the keypoint.
+    std::vector<SLAM::point> reducedKeypoints;
+    
+
+    Mat paddedImg2;
+    cv::copyMakeBorder(img, paddedImg2, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
+    Mat paddedMag;
+    cv::copyMakeBorder(mag, paddedMag, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
+    Mat paddedOrient;
+    cv::copyMakeBorder(orient, paddedOrient, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
+
+    for (const auto& keypoint : keypoints) {
+        int x = keypoint.col;
+        int y = keypoint.row;
+        float response = computeEdgeResponse(keypoint, grad_x, grad_y);
+        float r = 10.0f;
+        float threshold = ((r + 1.0f) * (r + 1.0f)) / r;
+
+        //only keep values that satify the condition
+        if (response < threshold) {
+            extrema++;
+
+            //create a 16x16 window around the current pixel.
+            Mat window (paddedImg2, Rect(x, y, windowSize2, windowSize2));
+            Mat windowMag (paddedMag, Rect(x, y, windowSize2, windowSize2));
+            Mat windowOrient (paddedOrient, Rect(x, y, windowSize2, windowSize2));
+
+            Mat magWeighted;
+            //note, it might be faster to calculate the orientation & magnitude using just the img window
+            GaussianBlur(windowMag, magWeighted, Size(0, 0), sigma, 0, BORDER_DEFAULT);        //note: the scale used here will need to adapt to the scale of the DoG Octave.
+
+            /*
+                Now, create a histrogram with this data
+                36 bins for orientation
+                weight each point w/ a Gaussian window of 1.5 sigma
+                --> this could be done by taking a gaussian function the size of the image region (16x16) and multiplying the values by the gaussian value
+                    at that point, then dividing the values by the highest value of the gaussian (1).
+                
+                //How are the values of the bins decided? Well, the magnitude tells the strength at the point of the angle
+                //so the magnitude image will need to be weighted
+                //But, once we have the magnitudes weighted, how do they add to the histogram?
+
+                //so it seems the histogram doesn't just count the number of angles which appear at that angle
+                //it also takes into account the total magnitude at that angle.
+            */
+
+            //Calculates a histogram of directions. Size controls the amount of degrees between each bin.
+            //ex: size = 36 --> 360 / 36  --> 36 bins each of 10 degrees.
+            int size = 36;
+            SLAM::imgRegion region = {0, 0, window.rows, window.cols};
+            std::vector<float> histo = orientationHistogram(size, region, magWeighted, windowOrient);
+
+            std::vector<float>::iterator result;
+            result = max_element(histo.begin(), histo.end());
+            float maxPeak = *result;
+            float peakThreshold = maxPeak * 0.8f;
+            
+            //now, read through the histrogram and find peaks.
+            for (int k = 0; k < histo.size(); ++k) {
+                if (histo.at(k) > peakThreshold) {
+                    int angle = k * 10;
+                    //here, k*10 gives the angle at that point. Additional peaks at different angles will generate new keypoints.
+                    reducedKeypoints.emplace_back( SLAM::point{y,x,angle,0});
+                    //DoG1.at<uchar>(y,x) = (uchar)255;       //note, y is row, x is col.
+
+                    //draw a circle around each reduced keypoint                  
+                    DrawKeypoint(img_color, Point(x,y), 9, Scalar(0,255,255), angle, true);
+                }
+            }
+        }
+    }
+
+    return reducedKeypoints;
+}
+
 int main() {
 
     std::string img_path = samples::findFile("building.jpg");
@@ -170,198 +358,14 @@ int main() {
 
     
     std::vector<Mat> dogs = { DoG1, DoG2, DoG3, DoG4};
-    std::vector<Mat> dogs_padded;
+
     int windowSize = 3;
-    int padding = (windowSize-1) / 2;
-    for (const auto& dog : dogs) {
-        Mat paddedDoG;
-        copyMakeBorder(dog, paddedDoG, padding, padding, padding, padding, BORDER_REPLICATE);
-        dogs_padded.emplace_back(std::move(paddedDoG));        //not sure if this is adding the refence to the old image or copying a new image in.
-    }
-
-    
-    std::vector<SLAM::point> keypoints;
-    //now compare adjacent DoGs to obtain 26 neighbors dogs[i-1], dogs[i], dogs[i+1]
-    //add padding of size 'kernelsize' to the image
-    for (int i = padding; i < DoG1.rows; i += windowSize) {
-        for (int j = padding; j < DoG1.cols; j += windowSize) {
-            std::vector<int> neighbors;
-            int this_pixel = (int)dogs_padded[1].at<uchar>(i,j);
-            
-            //now take a window of the surrounding 26 neighbors 3x3 neighbors in adjacent smoothing directions.
-            for (int u = i-padding; u < i+padding; u++) {
-                for (int v = j - padding; v < j+padding; v++) {
-                    //this is the window. add all neighbbors to
-                    neighbors.emplace_back((int)dogs_padded[0].at<uchar>(u,v));
-                    neighbors.emplace_back((int)dogs_padded[1].at<uchar>(u,v));
-                    neighbors.emplace_back((int)dogs_padded[2].at<uchar>(u,v));
-                }
-            }
-
-            int min = *min_element(neighbors.begin(), neighbors.end());
-            int max = *max_element(neighbors.begin(), neighbors.end());
-
-            
-            if (this_pixel == min || this_pixel == max) {
-                //Feature Point Localization:
-                //https://www.youtube.com/watch?v=LXk4A24V8mQ
-                //It filters out additional points by interpolating between positions and scale space to approximate a 3D surface.
-                //We do this with the derivative of the pixel w/ respect to x,y and scale directions.
-                //effectively this means taking the difference of points in:
-                //  x-1,        x+1 direction
-                //  y-1,        y+1 direction
-                //  adjacent-1, adjacent+1 direction
-                int d_x = (int)dogs_padded[1].at<uchar>(i,j-1) - (int)dogs_padded[1].at<uchar>(i,j+1);
-                int d_y = (int)dogs_padded[1].at<uchar>(i-1,j) - (int)dogs_padded[1].at<uchar>(i + 1,j);
-                int d_scale = (int)dogs_padded[0].at<uchar>(i,j) - (int)dogs_padded[2].at<uchar>(i,j);
-
-
-                //Now, Perform 'Feature Point Localization'
-                //Note that in the SIFT paper, they consider intensity values less than 0.03 in the scale of [0-1] to be low contrast
-                //0.03 * 255 = 7.65
-                cv::Vec3f A_vec((float)d_x / 255.0f, (float)d_y / 255.0f, (float)d_scale / 255.0f);
-                cv::Mat A = Mat(A_vec);     //3x1
-                cv::Mat A_T;                                                            
-                transpose(A, A_T);          //1x3
-                
-                Mat B = A*A_T;              //A (3x1) * A^T (1x3) = 3x3 matrix.
-                Mat B_inverse = -(B.inv());
-                
-                Mat z_hat = B_inverse * A;        //3x3 * 3x1 = 3x1 vector
-                //std::cout << "z_hat" << std::endl << z_hat << std::endl;
-                
-                Mat dog_zhat_mat = ((float)this_pixel / 255.0f) + 0.5f * A_T * z_hat;
-                //std::cout << "dog_zhat_mat" << std::endl << dog_zhat_mat << std::endl;
-                float dog_zhat = dog_zhat_mat.at<float>(0,0);
-                
-                if (dog_zhat > 0.03f) {     //if the value is above 0.03, then it is a high enough contrast point.
-                    keypoints.emplace_back( SLAM::point{i,j,(int)(dog_zhat * 255), padding});
-                    //DoG1.at<uchar>(i,j) = (uchar)255;
-                }
-
-            }
-        }
-    }
+    //note, it should actually take in the dogs list, rather than the padded.
+    std::vector<SLAM::point> keypoints = initialKeypointDetection(dogs, windowSize);
     
     std::cout << "Number of keypoints (new method): " << keypoints.size() << std::endl;
 
-    //For DoG we also need the deriv in x&y directions, to additionally calculate the gradient direction
-    //derivs
-    int ksize = 1;
-    int scale = 1;
-    int delta = 0;
-    int ddepth = CV_32F;        //16bit signed (short)
-    Mat grad_x, grad_y, mag, orient;
-    Sobel(blurred1, grad_x, ddepth, 1, 0, ksize, scale, delta, BORDER_DEFAULT);
-    Sobel(blurred1, grad_y, ddepth, 0, 1, ksize, scale, delta, BORDER_DEFAULT);
-    magnitude(grad_x, grad_y, mag);
-    phase(grad_x, grad_y, orient, true);
-    
-    //Now, further filter the keypoints using the Hessian
-    int extrema = 0;
-    int windowSize2 = 16;
-    int padding2 = windowSize2/2;
-    int sigma = 1.5*3;                  //later, update this to by 1.5x the scale of the keypoint.
-    std::vector<SLAM::point> reducedKeypoints;
-    
-
-    Mat paddedImg2;
-    cv::copyMakeBorder(img, paddedImg2, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
-    Mat paddedMag;
-    cv::copyMakeBorder(mag, paddedMag, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
-    Mat paddedOrient;
-    cv::copyMakeBorder(orient, paddedOrient, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
-
-    for (const auto& keypoint : keypoints) {
-        int x = keypoint.col;
-        int y = keypoint.row;
-        float response = computeEdgeResponse(keypoint, grad_x, grad_y);
-        float r = 10.0f;
-        float threshold = ((r + 1.0f) * (r + 1.0f)) / r;
-
-        //only keep values that satify the condition
-        if (response < threshold) {
-            extrema++;
-            //are these calculated for each keypoint or for all neighbors of the keypoint?
-            //the paper seems to indicate calculating these values for all pixels
-            //the best way to do it would be to take a subsection of the image around that pixel and then perform magnitude, orientation, etc on it.
-            //create a 16x16 window around the current pixel.
-            Mat window (paddedImg2, Rect(x, y, windowSize2, windowSize2));
-            Mat windowMag (paddedMag, Rect(x, y, windowSize2, windowSize2));
-            Mat windowOrient (paddedOrient, Rect(x, y, windowSize2, windowSize2));
-
-            Mat magWeighted;
-            //note, it might be faster to calculate the orientation & magnitude using just the img window
-            GaussianBlur(windowMag, magWeighted, Size(0, 0), sigma, 0, BORDER_DEFAULT);        //note: the scale used here will need to adapt to the scale of the DoG Octave.
-
-            /*
-                Now, create a histrogram with this data
-                36 bins for orientation
-                weight each point w/ a Gaussian window of 1.5 sigma
-                --> this could be done by taking a gaussian function the size of the image region (16x16) and multiplying the values by the gaussian value
-                    at that point, then dividing the values by the highest value of the gaussian (1).
-                
-                //How are the values of the bins decided? Well, the magnitude tells the strength at the point of the angle
-                //so the magnitude image will need to be weighted
-                //But, once we have the magnitudes weighted, how do they add to the histogram?
-
-                //so it seems the histogram doesn't just count the number of angles which appear at that angle
-                //it also takes into account the total magnitude at that angle.
-            */
-            //adding {} is refered to as 'value-initialization' and sets all values to 0.
-
-            /*
-            */
-
-            //Calculates a histogram of directions. Size controls the amount of degrees between each bin.
-            //ex: size = 36 --> 360 / 36  --> 36 bins each of 10 degrees.
-            int size = 36;
-            SLAM::imgRegion region = {0, 0, window.rows, window.cols};
-            std::vector<float> histo = orientationHistogram(size, region, magWeighted, windowOrient);
-
-            std::vector<float>::iterator result;
-            result = max_element(histo.begin(), histo.end());
-            float maxPeak = *result;
-            float peakThreshold = maxPeak * 0.8f;
-            int index = std::distance(histo.begin(), result);
-
-            //std::cout << "highest orientation peak at angle: " << index*10 << std::endl;
-            //std::cout << "value of max peak:  " << maxPeak << std::endl;
-            
-
-            //now, read through the histrogram and find peaks.
-            for (int k = 0; k < histo.size(); ++k) {
-                if (histo.at(k) > peakThreshold) {
-                    //std::cout << "peak found with value: " << histo.at(k) << std::endl;
-                    //another keypoint should be added if an additional peak is found.
-                    //note, verify this!!
-
-                    //also, add the dominant orientation to the keypoint info
-                    int angle = k * 10;
-                    //here, k*10 gives the angle at that point. Additional peaks at different angles will generate new keypoints.
-                    reducedKeypoints.emplace_back( SLAM::point{y,x,angle,0});
-                    //DoG1.at<uchar>(y,x) = (uchar)255;       //note, y is row, x is col.
-
-                    //draw a circle around each reduced keypoint
-                    int radius = 9;
-                    Point center(x,y);
-                    Point rotationEdge(center.x+radius,center.y+radius);        //position, then rotate.
-                    rotationEdge = SLAM::Rotation::rotate_pt_CCW(rotationEdge, center, angle);     //need to ensure this aligns with the later functions.
-                    circle(img_color, center, 9, Scalar(0,255,255));
-
-                    //it would also be good to draw the rotation direction as a vector.
-                    line(img_color, center, rotationEdge, Scalar(0,255,255));
-
-                }
-            }
-            
-
-
-            //DoG1.at<uchar>(keypoint.rows, keypoint.cols) = (uchar)255;
-            //break;
-        }
-    }
-
+    std::vector<SLAM::point> reducedKeypoints = filterKeypoints(img, blurred1, keypoints);
     std::cout << "Number of keypoints after edge orientation: " << reducedKeypoints.size() << std::endl;
 
 
@@ -425,6 +429,8 @@ int main() {
         int angleThresh = 360 / histoSize;
         int subregion = 4;
         SLAM::imgRegion region = {0,0,subregion,subregion};
+
+        //TODO: convert this into a function "iterate subregion", which takes as arg a function & other stuff.
         while (region.minRows < windowSize3) {
             std::vector<float> histo = orientationHistogram(histoSize, region, magWeighted, orientROI);
             for (const auto& val : histo) {
@@ -480,7 +486,9 @@ int main() {
     //imshow("Orientation",mat2gray(orient));
     //imshow("DoG1", DoG1);
     imshow("Img", img_color);
+    moveWindow("Img", 0, 0);
     imshow("Padded img w/ lines", paddedImg3);
+    moveWindow("Padded img w/ lines", 0, img_color.rows);
     int k = waitKey(0);
 
     if (k == 's') {
