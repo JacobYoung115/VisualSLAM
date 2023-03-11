@@ -1,18 +1,21 @@
+#include <Rotation/rotation.h>
+#include <GaussPyramid/GaussPyramid.hpp>
+/*
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/core/types.hpp>
-#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <vector>
+#include <string>
+*/
+#include <algorithm>
 #include <iterator>
-#include "rotation.h"
-
-
 
 using namespace cv;
+using std::cout, std::endl;
 
 /*
 Notes: first just do it in a way that I understand
@@ -28,12 +31,23 @@ namespace SLAM {
         int padding;
     };
 
-    struct imgRegion {
-        imgRegion(int minRows_, int minCols_, int maxRows_, int maxCols_) : minRows(minRows_), minCols(minCols_), maxRows(maxRows_), maxCols(maxCols_) {}
+    struct ImgRegion {
+        ImgRegion(int minRows_, int minCols_, int maxRows_, int maxCols_) : minRows(minRows_), minCols(minCols_), maxRows(maxRows_), maxCols(maxCols_) {}
         int minRows;
         int minCols;
         int maxRows;
         int maxCols;
+    };
+
+    //Mat = operation only creates a new header, but automatically refences the data.
+    struct ProcessedImage {
+        Mat grey;
+        Mat color;
+        Mat blurred;
+        Mat grad_x;
+        Mat grad_y;
+        Mat magnitude;
+        Mat orientation;
     };
 
 }   //namespace SLAM
@@ -76,7 +90,7 @@ float computeEdgeResponse(const SLAM::point& keypoint, Mat& grad_x, Mat& grad_y)
 }
 
 //region argument is for using an additional loop for multiple image patches.
-std::vector<float> orientationHistogram(int size, SLAM::imgRegion region, Mat& magWeighted, Mat& windowOrient) {
+std::vector<float> orientationHistogram(int size, SLAM::ImgRegion region, Mat& magWeighted, Mat& windowOrient) {
     std::vector<float> histo(size, 0.0f);
     float reductionCoeff = float(size) / 360.0f;
 
@@ -182,7 +196,7 @@ void FeaturePointLocalization(std::vector<Mat>& dogs_padded, std::vector<SLAM::p
 }
 
 //aka Scale Space Extrema Detection
-std::vector<SLAM::point> initialKeypointDetection(std::vector<Mat>& dogs, int windowSize) {
+std::vector<SLAM::point> initialKeypointDetection(const std::vector<Mat>& dogs, int windowSize) {
     std::vector<SLAM::point> keypoints;
 
     int padding = (windowSize-1) / 2;
@@ -225,47 +239,28 @@ std::vector<SLAM::point> initialKeypointDetection(std::vector<Mat>& dogs, int wi
     return keypoints;
 }
 
-Struct processedImage {
-    Mat& image;
-    Mat& blurred;
-    Mat& magnitude;
-    Mat& orientation;
-}
-
 
 //keypoints are first filtered by removing any points which correspond to edges or flat regions.
-std::vector<SLAM::point> filterKeypoints(Mat& img, Mat& blurred, std::vector<SLAM::point>& keypoints) {
-    //For DoG we also need the deriv in x&y directions, to additionally calculate the gradient direction
-    //derivs
-    int ksize = 1;
-    int scale = 1;
-    int delta = 0;
-    int ddepth = CV_32F;        //16bit signed (short)
-    Mat grad_x, grad_y, mag, orient;
-    Sobel(blurred, grad_x, ddepth, 1, 0, ksize, scale, delta, BORDER_DEFAULT);
-    Sobel(blurred, grad_y, ddepth, 0, 1, ksize, scale, delta, BORDER_DEFAULT);
-    magnitude(grad_x, grad_y, mag);
-    phase(grad_x, grad_y, orient, true);
-    
+std::vector<SLAM::point> filterKeypoints(SLAM::ProcessedImage myImages, std::vector<SLAM::point>& keypoints) {
     //Now, further filter the keypoints using the Hessian
     int extrema = 0;
     int windowSize2 = 16;
     int padding2 = windowSize2/2;
-    int sigma = 1.5*windowSize;                  //later, update this to by 1.5x the scale of the keypoint.
+    int sigma = 1.5*3;                  //later, update this to by 1.5x the scale of the keypoint.
     std::vector<SLAM::point> reducedKeypoints;
     
 
     Mat paddedImg2;
-    cv::copyMakeBorder(img, paddedImg2, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
+    cv::copyMakeBorder(myImages.grey, paddedImg2, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
     Mat paddedMag;
-    cv::copyMakeBorder(mag, paddedMag, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
+    cv::copyMakeBorder(myImages.magnitude, paddedMag, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
     Mat paddedOrient;
-    cv::copyMakeBorder(orient, paddedOrient, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
+    cv::copyMakeBorder(myImages.orientation, paddedOrient, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
 
     for (const auto& keypoint : keypoints) {
         int x = keypoint.col;
         int y = keypoint.row;
-        float response = computeEdgeResponse(keypoint, grad_x, grad_y);
+        float response = computeEdgeResponse(keypoint, myImages.grad_x, myImages.grad_y);
         float r = 10.0f;
         float threshold = ((r + 1.0f) * (r + 1.0f)) / r;
 
@@ -300,7 +295,7 @@ std::vector<SLAM::point> filterKeypoints(Mat& img, Mat& blurred, std::vector<SLA
             //Calculates a histogram of directions. Size controls the amount of degrees between each bin.
             //ex: size = 36 --> 360 / 36  --> 36 bins each of 10 degrees.
             int size = 36;
-            SLAM::imgRegion region = {0, 0, window.rows, window.cols};
+            SLAM::ImgRegion region = {0, 0, window.rows, window.cols};
             std::vector<float> histo = orientationHistogram(size, region, magWeighted, windowOrient);
 
             std::vector<float>::iterator result;
@@ -317,13 +312,37 @@ std::vector<SLAM::point> filterKeypoints(Mat& img, Mat& blurred, std::vector<SLA
                     //DoG1.at<uchar>(y,x) = (uchar)255;       //note, y is row, x is col.
 
                     //draw a circle around each reduced keypoint                  
-                    DrawKeypoint(img_color, Point(x,y), 9, Scalar(0,255,255), angle, true);
+                    DrawKeypoint(myImages.color, Point(x,y), 9, Scalar(0,255,255), angle, true);
                 }
             }
         }
     }
 
     return reducedKeypoints;
+}
+
+
+//need a function to handle the difference of gaussian pyramids.
+
+
+//all image preprocessing should be done in a single function.
+void PostProcessing(Mat& color, Mat& blurred, SLAM::ProcessedImage& myImages) {
+    myImages.color = color;
+    //cvtColor(myImages.color, myImages.grey, COLOR_BGR2GRAY);
+    myImages.blurred = blurred;
+    //myImages.grey = img;
+    
+    //For DoG we also need the deriv in x&y directions, to additionally calculate the gradient direction
+    //derivs
+    int ksize = 1;
+    int scale = 1;
+    int delta = 0;
+    int ddepth = CV_32F;        //16bit signed (short)
+
+    Sobel(myImages.blurred, myImages.grad_x, ddepth, 1, 0, ksize, scale, delta, BORDER_DEFAULT);
+    Sobel(myImages.blurred, myImages.grad_y, ddepth, 0, 1, ksize, scale, delta, BORDER_DEFAULT);
+    magnitude(myImages.grad_x, myImages.grad_y, myImages.magnitude);
+    phase(myImages.grad_x, myImages.grad_y, myImages.orientation, true);
 }
 
 int main() {
@@ -336,6 +355,22 @@ int main() {
     cvtColor(img_color, img, COLOR_BGR2GRAY);
     // = imread(img_path, IMREAD_GRAYSCALE);
 
+    int numOctaves = 4; //this represents the s variable in SIFT.
+    float pyr_sigma = 1.6f;                        //paper states a pyr_sigma of 1.6
+    std::string octave_window = "Octave 3 Blurs";
+    GaussPyramid pyramid{img, numOctaves, pyr_sigma};
+
+    
+    for (const auto& kv: pyramid.gaussPyramid()) {
+        cout << "Pyramid level: " << kv.first << endl;
+        //cout << "size of data: " << kv.second.size() << endl;
+        cout << "image size: width.height (" << kv.second.at(0).cols << ", " << kv.second.at(0).rows << ")" << endl;
+    }
+    GaussPyramid::showOctave(pyramid.getBlurOctave(2), octave_window);
+    
+
+   //TODO: Now, replace the code which uses individual images, to use the full pyramid.
+
     //now that image is loaded, blur it.
     Mat blurred1;
     Mat blurred2;
@@ -343,8 +378,14 @@ int main() {
     Mat blurred4;
     Mat blurred5;
 
+    SLAM::ProcessedImage myImages;
+    myImages.grey = img;
+    
+
     //octave 1 (original image size)
     GaussianBlur(img, blurred1, Size(3,3), 0, 0, BORDER_DEFAULT);       //consider adjusting the sigmaX and sigmaY values.
+    PostProcessing(img_color, blurred1, myImages);                      //need to adjust the post-processing struct to work w/ pyramid.
+    
     GaussianBlur(img, blurred2, Size(5,5), 0, 0, BORDER_DEFAULT);
     GaussianBlur(img, blurred3, Size(7,7), 0, 0, BORDER_DEFAULT);
     GaussianBlur(img, blurred4, Size(9,9), 0, 0, BORDER_DEFAULT);
@@ -356,16 +397,24 @@ int main() {
     Mat DoG3 = blurred3 - blurred4;
     Mat DoG4 = blurred4 - blurred5;
 
+
+    //The Gaussian Pyramid can be a map (dictionary), where the key is the octave
+    //while the value is the list of blurred images.
+
     
-    std::vector<Mat> dogs = { DoG1, DoG2, DoG3, DoG4};
+    
+    //const std::vector<Mat> dogs = { DoG1, DoG2, DoG3, DoG4};
 
     int windowSize = 3;
     //note, it should actually take in the dogs list, rather than the padded.
-    std::vector<SLAM::point> keypoints = initialKeypointDetection(dogs, windowSize);
+    //std::vector<SLAM::point> keypoints = initialKeypointDetection(dogs, windowSize);
     
+    std::vector<SLAM::point> keypoints = initialKeypointDetection(pyramid.getDiffOctave(0), windowSize);
+
+
     std::cout << "Number of keypoints (new method): " << keypoints.size() << std::endl;
 
-    std::vector<SLAM::point> reducedKeypoints = filterKeypoints(img, blurred1, keypoints);
+    std::vector<SLAM::point> reducedKeypoints = filterKeypoints(myImages, keypoints);
     std::cout << "Number of keypoints after edge orientation: " << reducedKeypoints.size() << std::endl;
 
 
@@ -375,15 +424,16 @@ int main() {
     int windowSize3 = 16;
     //1.414f is sqrt(2), which is used to pad an image according to the 
     //hypotaneuse of a square window, rather than by width & height.
-    int maxPadding = ceil(float(windowSize) * 1.414f / 2.0f);       
+    int maxPadding = ceil(float(windowSize) * 1.414f / 2.0f);
+    int sigma = 1.5*3;                  //Update this later!!       
     std::vector<Point2i> rotatedPoints;
     Point2i currentPoint;
     Mat paddedImg3;
     Mat paddedMag3;
     Mat paddedOrient3;
-    copyMakeBorder(img, paddedImg3, maxPadding, maxPadding, maxPadding, maxPadding, BORDER_REPLICATE);
-    copyMakeBorder(mag, paddedMag3, maxPadding, maxPadding, maxPadding, maxPadding, BORDER_REPLICATE);
-    copyMakeBorder(orient, paddedOrient3, maxPadding, maxPadding, maxPadding, maxPadding, BORDER_REPLICATE);
+    copyMakeBorder(myImages.grey, paddedImg3, maxPadding, maxPadding, maxPadding, maxPadding, BORDER_REPLICATE);
+    copyMakeBorder(myImages.magnitude, paddedMag3, maxPadding, maxPadding, maxPadding, maxPadding, BORDER_REPLICATE);
+    copyMakeBorder(myImages.orientation, paddedOrient3, maxPadding, maxPadding, maxPadding, maxPadding, BORDER_REPLICATE);
     std::vector<std::vector<float>> featureDescriptors_vec;
 
     for (const auto& keypoint : reducedKeypoints) {
@@ -428,7 +478,7 @@ int main() {
         int histoSize = 8;
         int angleThresh = 360 / histoSize;
         int subregion = 4;
-        SLAM::imgRegion region = {0,0,subregion,subregion};
+        SLAM::ImgRegion region = {0,0,subregion,subregion};
 
         //TODO: convert this into a function "iterate subregion", which takes as arg a function & other stuff.
         while (region.minRows < windowSize3) {
@@ -485,10 +535,10 @@ int main() {
     //imshow("Magnitude", mat2gray(mag));
     //imshow("Orientation",mat2gray(orient));
     //imshow("DoG1", DoG1);
-    imshow("Img", img_color);
+    imshow("Img", myImages.color);
     moveWindow("Img", 0, 0);
     imshow("Padded img w/ lines", paddedImg3);
-    moveWindow("Padded img w/ lines", 0, img_color.rows);
+    moveWindow("Padded img w/ lines", 0, myImages.color.rows);
     int k = waitKey(0);
 
     if (k == 's') {
