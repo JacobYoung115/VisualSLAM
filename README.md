@@ -11,7 +11,7 @@ VisualSLAM is typically broken down into a few steps.
 Each of these steps can be performed using different algorithms, I explore a few in this project:
 
 ### 1. Keypoint detection
-* Harris Corner Detection
+* [Harris Corner Detection](http://www.bmva.org/bmvc/1988/avc-88-023.pdf)
 * Difference of Gaussian
 
 ### 2. Feature description / Image Matching
