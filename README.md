@@ -25,13 +25,13 @@ Ultimately these steps are tied together to create a SLAM solution.
 
 
 ## Requirements
-This project has the following depencies:
-* Linux - Ubuntu 22.04
-* g++ Compiler (version (Ubuntu 11.3.0-1ubuntu1~22.04) 11.3.0)
-* OpenCV C++ (I use version 4.7.0-dev, but versions 3.5+ should work)
-* cmake (version 3.22.1)
+This project is written in C++ 17 and should be compatible with any C++ 17 compiler. It uses the most recently available versions of the following dependencies:
+* [Linux](https://ubuntu.com/download/desktop) - Ubuntu 22.04
+* [GCC](http://gcc.gnu.org/) (version (Ubuntu 11.3.0-1ubuntu1~22.04) 11.3.0)
+* [OpenCV C++](https://docs.opencv.org/4.x/d7/d9f/tutorial_linux_install.html) (I use version 4.7.0-dev, but versions 3.5+ should work)
+* [CMake](https://cmake.org/) (version 3.22.1)
 * make (GNU Make 4.3)
-* git (version 2.34.1)
+* [Git](https://git-scm.com/) (version 2.34.1)
 
 Note that different versions of these depencies may work just fine.
 
@@ -62,8 +62,8 @@ Tests that the executables built properly and are working by running:
 
 ## References
 1. [Wikipedia SLAM](https://en.wikipedia.org/wiki/Simultaneous_localization_and_mapping)
-2. [Modern C++ for Computer Vision - 2021] (https://www.ipb.uni-bonn.de/teaching/cpp-2021/lectures/)
-3. [Modern C++ for CV - 2018] (https://www.ipb.uni-bonn.de/teaching/modern-cpp/#slides)
-4. [Mobile Sensing and Robotics 2], 2021 - University of Bonn (https://www.youtube.com/playlist?list=PLgnQpQtFTOGQh_J16IMwDlji18SWQ2PZ6)
-5. SIFT - [Distinctive Image Features from Scale-Invariant Keypoints] 2004 - David G. Lowe (https://www.cs.ubc.ca/~lowe/papers/ijcv04.pdf)
-6. CMake - ["How to CMake Good"] (https://www.youtube.com/watch?v=_yFPO1ofyF0&list=PLK6MXr8gasrGmIiSuVQXpfFuE1uPT615s)
+2. [Modern C++ for Computer Vision - 2021](https://www.ipb.uni-bonn.de/teaching/cpp-2021/lectures/)
+3. [Modern C++ for CV - 2018](https://www.ipb.uni-bonn.de/teaching/modern-cpp/#slides)
+4. [Mobile Sensing and Robotics 2 - 2021](https://www.youtube.com/playlist?list=PLgnQpQtFTOGQh_J16IMwDlji18SWQ2PZ6)
+5. [SIFT](https://www.cs.ubc.ca/~lowe/papers/ijcv04.pdf)
+6. [CMake tutorials](https://www.youtube.com/watch?v=_yFPO1ofyF0&list=PLK6MXr8gasrGmIiSuVQXpfFuE1uPT615s)
