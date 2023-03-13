@@ -11,27 +11,27 @@ VisualSLAM is typically broken down into a few steps.
 Each of these steps can be performed using different algorithms, I explore a few in this project:
 
 ### 1. Keypoint detection
-..* Harris Corner Detection
-..* Difference of Gaussian
+* Harris Corner Detection
+* Difference of Gaussian
 
 ### 2. Feature description / Image Matching
-..* SIFT
-..* ORB
+* SIFT
+* ORB
 
 ### 3. 3D Reconstruction
-..* Epipolar Geometry
+* Epipolar Geometry
 
 Ultimately these steps are tied together to create a SLAM solution.
 
 
 ## Requirements
 This project has the following depencies:
-..* Linux - Ubuntu 22.04
-..* g++ Compiler (version (Ubuntu 11.3.0-1ubuntu1~22.04) 11.3.0)
-..* OpenCV C++ (I use version 4.7.0-dev, but versions 3.5+ should work)
-..* cmake (version 3.22.1)
-..* make (GNU Make 4.3)
-..* git (version 2.34.1)
+* Linux - Ubuntu 22.04
+* g++ Compiler (version (Ubuntu 11.3.0-1ubuntu1~22.04) 11.3.0)
+* OpenCV C++ (I use version 4.7.0-dev, but versions 3.5+ should work)
+* cmake (version 3.22.1)
+* make (GNU Make 4.3)
+* git (version 2.34.1)
 
 Note that different versions of these depencies may work just fine.
 
