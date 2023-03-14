@@ -5,7 +5,7 @@ using std::cout, std::endl;
 void compareImages(Mat& img1, Mat& img2) {
     double total = 0;
     double divisor = img1.rows * img1.cols;
-    int padding = 5;
+    int padding = 0;
 
     for (int i = padding; i < img1.rows-padding; ++i) {
         for (int j = padding; j < img1.cols-padding; ++j) {
@@ -22,13 +22,38 @@ void compareImages(Mat& img1, Mat& img2) {
 
     total /= divisor;
     cout << "Average ratio between image pixels: " << total << endl;
-} 
+}
+
+//returns a value 2*sigma, rounded to the nearest odd.
+//instead, make it cieled to the next off number.
+int getWindowSize(double sigma) {
+    int window_size = 0;
+    double window = 3.0*sigma;
+
+    if (ceil(window) / 2 !=0) {
+        window_size = ceil(window);
+    }
+    else {
+        window_size = ceil(window)+1;
+    }
+
+
+    return window_size;
+}
 
 int main() {
     /*
         Goal: Create and display a gaussian pyramid (map)
         
     */
+
+    //choosing a kernel size based upon the sigma value:
+    //https://stackoverflow.com/questions/17841098/gaussian-blur-standard-deviation-radius-and-kernel-size
+
+    cout << "OpenCV version : " << CV_VERSION << endl;
+    cout << "Major version : " << CV_MAJOR_VERSION << endl;
+    cout << "Minor version : " << CV_MINOR_VERSION << endl;
+    cout << "Subminor version : " << CV_SUBMINOR_VERSION << endl;
 
     std::string img_path = samples::findFile("building.jpg");
     Mat img_color = imread(img_path, IMREAD_COLOR);
@@ -58,6 +83,17 @@ int main() {
     //Write a function which keeps track of the sigma value of all the levels in each octave.
     //1. Compare manually a blurred image that is gaussian'd twice and an image which is blurred once (but w/ the correct gauss formula)
     //new_sigma = sqrt( sig1**2 + sig2**2 )
+
+    //CONCLUSION: the new_sigma calculation is CORRECT. It is just that when discretizing the calculation,
+    //it is rare and difficult to get less than 1 pixel difference.
+    //Just accept this and move on.
+    //it would be good to confirm this on multiple successive levels. I'm sure the difference may add up.
+
+
+    //What if I specify the window size to be int(2*sigma)?
+    int window_size = getWindowSize(sigmaTest);
+    cout << "Sigma value: " << sigmaTest << endl;
+    
     Mat blur1;
     GaussianBlur(img, blur1, Size(), sigmaTest, 0, BORDER_DEFAULT);
 
@@ -69,66 +105,58 @@ int main() {
     cout << "max val of double blur: " << maxVal << endl;
 
 
-
     double newSigma = sqrt(pow(sigmaTest, 2.0) + pow(sigmaTest, 2.0));
+    window_size = getWindowSize(newSigma);
+    cout << "new Sigma value: " << newSigma << endl;
+    
+
+    //LAST TEST!
+    //Is it possible to not specify size in one blur, and not in the other, but keep the sigma value
+    //then, find out what this kernel size is?
+    //Apparently Yes! but it is much higher than expected.
+
     Mat blur3;
-    GaussianBlur(img, blur3, Size(), newSigma, 0, BORDER_DEFAULT);
+    GaussianBlur(img, blur3, Size(23,23), newSigma, 0, BORDER_DEFAULT);
 
     minMaxLoc(blur3, &minVal, &maxVal, &minLoc, &maxLoc);
     cout << "min val of single blur: " << minVal << endl;
     cout << "max val of single blur: " << maxVal << endl;
 
-    bool areIdentical = !cv::norm(blur2,blur3,NORM_L1);
+    Mat blur4;
+    GaussianBlur(img, blur4, Size(), newSigma, 0, BORDER_DEFAULT);
+
+    bool areIdentical = !cv::norm(blur4,blur3,NORM_L1);
     cout << "blurred images equal?: " << areIdentical << endl;      //says they're not equal.
-    //this NEEDS to be figured out.
 
     //95.28% equivalent. Perhaps the remaining percentages could be due to the edge pixels.
     //try sampling only internal pixels (which wouldn't be affected by edge pixels.)
     //note: excluding edge pixels actually decreases the accuracy ._. How??
-    compareImages(blur2, blur3);
+    compareImages(blur4, blur3);
+
+
 
     imshow("double blurred", blur2);
     imshow("single blurred with new sigma", blur3);
 
-    Mat diff = blur2 - blur3;
+    Mat diff = blur4 - blur3;
     imshow("diff between blurs", diff);
 
 
     minMaxLoc(diff, &minVal, &maxVal, &minLoc, &maxLoc);
-    cout << "min val: " << minVal << endl;
-    cout << "max val: " << maxVal << endl;
+    cout << "min val of diff: " << minVal << endl;
+    cout << "max val of diff: " << maxVal << endl;
 
 
-    //Test if OpenCV is consistent when switching between sigma calculation and kernel size
-    Mat blurKernel;
-    GaussianBlur(img, blurKernel, Size(5,5), 0, 0, BORDER_DEFAULT);
+    //try equalizing the diff image. There is a difference of only a single value.
+    Mat equalized;
+    equalizeHist(diff, equalized);
+    imshow("equalized", equalized);
 
-    Mat blurSigma;
-    GaussianBlur(img, blurSigma, Size(), 1.1, 1.1, BORDER_DEFAULT);
-
-    areIdentical = !cv::norm(blurKernel,blurSigma,NORM_L1);
-    cout << "opencv sigma / kernelsize conversion equal?: " << areIdentical << endl;      //says they're not equal.
-
-    //results comparing ratios show that these two are not very equal (83%).
-    compareImages(blurKernel, blurSigma);
-    //apparently they are NOT equal, so OpenCV is not inversable in the way it calculates size vs sigma.
-    //Although, ensure the tests are accurate by checking with the different comparisons.
-
-
-    //Other ways to compare the similarity between the images?
-    //1. Histogram comparison cv::compareHist()
-
-    //2. templateMatching cv::matchTemplate()
-
-    //3. take an average ratio between pixel intensities? This could give up to 3 decimal places of accuracy
-
-    //or. create my own gaussian kernel w/ my own sigma value to ensure the kernel and sigma are always aligned.
-    //--> this may obviously be the most accurate solution.
-
-
-
-
+    minMaxLoc(equalized, &minVal, &maxVal, &minLoc, &maxLoc);
+    cout << "min val of equalized: " << minVal << endl;
+    cout << "max val of equalized: " << maxVal << endl;
     
+
     //https://stackoverflow.com/questions/9905093/how-to-check-whether-two-matrices-are-identical-in-opencv
     //bool areIdentical = !cv::norm(downsized,downsized2,NORM_L1);
     //cout << "Downsized images equal?: " << areIdentical << endl;

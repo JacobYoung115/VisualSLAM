@@ -60,6 +60,7 @@ Tests that the executables built properly and are working by running:
 ./tests/RotateImgTest
 ```
 
+
 ## References
 1. [Wikipedia SLAM](https://en.wikipedia.org/wiki/Simultaneous_localization_and_mapping)
 2. [Modern C++ for Computer Vision - 2021](https://www.ipb.uni-bonn.de/teaching/cpp-2021/lectures/)
