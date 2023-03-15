@@ -12,14 +12,14 @@ Each of these steps can be performed using different algorithms, I explore a few
 
 ### 1. Keypoint detection
 * [Harris Corner Detection](http://www.bmva.org/bmvc/1988/avc-88-023.pdf)
-* Difference of Gaussian
+* [Difference of Gaussian](https://en.wikipedia.org/wiki/Difference_of_Gaussians)
 
 ### 2. Feature description / Image Matching
-* SIFT
-* ORB
+* [SIFT](https://en.wikipedia.org/wiki/Scale-invariant_feature_transform)(5)
+* [ORB](https://en.wikipedia.org/wiki/Oriented_FAST_and_rotated_BRIEF)
 
 ### 3. 3D Reconstruction
-* Epipolar Geometry
+* [Epipolar Geometry](https://en.wikipedia.org/wiki/Epipolar_geometry)
 
 Ultimately these steps are tied together to create a SLAM solution.
 
