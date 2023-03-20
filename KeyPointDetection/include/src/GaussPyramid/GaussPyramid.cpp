@@ -43,6 +43,8 @@ void GaussPyramid::displayPyramid(const std::map<int, std::vector<Mat>> pyramid)
     }
 }
 
+
+//it may be useful to display the current octave number along with the sigma value of each image in the octave.
 void GaussPyramid::showOctave(const std::vector<Mat> images, const std::string window_name, const Point pos) {
     Mat display;
     display = images.at(0);
@@ -62,14 +64,16 @@ void GaussPyramid::createPyramid(Mat& img) {
     resize(img, pyrBase, Size(), 2, 2, INTER_LINEAR);
 
     for (int i = 0; i < this->numOctaves_; ++i) {
-        //allocate 7 empty images to move the data over.
+        this->currentOctave_ = i;   //this is set in order to calculate the sigma value of each level in each octave.
+
+        //allocate 6 empty images to move the data over.
         std::vector<Mat> gaussians = GaussVector(pyrBase);
         std::vector<Mat> diffs = Diff_of_Gauss(gaussians);
         this->img_pyramid.emplace_back(pyrBase);                //TODO: Does the image pyramid need to contain unblurred images??
 
         //The SIFT paper states that, they take a gaussian image w/ twice the initial value of sigma, this corresponds to
-        //the 3rd image from the top (in our case, the 5th image)
-        Mat octaveBase = gaussians.at(this->numOctaves_); //only copies the header
+        //the 3rd image from the top (in our case, the 4th image)
+        Mat octaveBase = gaussians.at(this->scaleSamples_); //only copies the header
 
         //now with the resized image, repeat the two for the other levels of the pyramid.
         resize(octaveBase, pyrBase, Size(), 0.5, 0.5, INTER_NEAREST);
@@ -79,23 +83,58 @@ void GaussPyramid::createPyramid(Mat& img) {
     }
 }
 
+//The maximum number of octaves in an image is set by taking the smaller dimension of width&height
+//then, taking log base 2 of that number, which gives the maximum number of times an image can be divided in half.
+//dividing an image down further than 32x32 isn't necessarily useful though, so we subtract the max # of octaves by 4.
+//ex: given an image 600x850, the maximum number of times it can be divided in half is log2(600) = ~9.2 = 9
+//    remove the last 4 non-useful feature layers (1x1, 2x2, 4x4, 8x8)... 9 - 4 = 5 octaves over the images.
+//see: https://stackoverflow.com/questions/30291398/vlfeat-computation-of-number-of-octaves-for-sift
+//     https://www.researchgate.net/post/Can_any_one_help_me_understand_Deeply_SIFT
+int GaussPyramid::calculateNumOctaves(Mat& img) {
+    this->numOctaves_ = floor(log2(min(img.rows, img.cols))) - 4;
+}
+
+const int GaussPyramid::getNumOctaves() {
+    return this->numOctaves_;
+}
+
+//returns the number of levels (the number of times an octave is divided into gaussian images).
+const int GaussPyramid::getNumLevels() {
+    return this->numLevels_;
+}
+
+//the first portion pow(2, this->currentOctave) keeps track of the doubling value of each octave. At octave 0, it will be 1
+//the second portion this->sigma_* pow(this->k_, level) tracks which level were on.
+double GaussPyramid::calculateSigma(int level) {
+    return pow(2,this->currentOctave_)*this->sigma_*pow( this->k_, level);
+}
+
+
+//see: https://dsp.stackexchange.com/questions/10074/sift-why-s3-scales-per-octave
 std::vector<Mat> GaussPyramid::GaussVector(Mat& img) {
-    std::vector<Mat> gaussians{this->numImages_, Mat::zeros(img.size(), CV_32FC1)};
+    std::vector<Mat> gaussians{this->numLevels_, Mat::zeros(img.size(), CV_32FC1)};
     Mat blurred;
-    for (int i = 0; i < this->numImages_; ++i) {
+
+    //instead of consecutively blurring the image, first calculate the sigma value for that blurred level..
+    for (int i = 0; i < this->numLevels_; ++i) {
+        double sigma = calculateSigma(i);
+        this->sigmas_.emplace_back(sigma);        //maybe track it in some other organized way.
         
-        if (i == 0 ) {
-            GaussianBlur(img, blurred, Size(0,0), this->sigma_*this->k_, 0, BORDER_DEFAULT);
-        }
-        else if(i > 0) {
-            GaussianBlur(gaussians[i-1], blurred, Size(0,0), this->sigma_*this->k_, 0, BORDER_DEFAULT);
-        }
+
+        //edit this part to instead blur given the sigma of the current level.
+        GaussianBlur(img, blurred, Size(0,0), sigma, 0, BORDER_DEFAULT);
         
         //cv::swap(blurred, gaussians[i]);     //note that swap is just slightly slower (by .1~1 miliseconds)
         gaussians[i] = std::move(blurred);
         //each iteration, take the previous blurred image & blur it again.
     }
+    this->sigmas_pyramid.emplace(this->currentOctave_, this->sigmas_);
     return gaussians;
+}
+
+const double GaussPyramid::getSigmaAt(int octave, int level) {
+    //TODO: correctly access the sigmas pyramid or vector
+    return this->sigmas_pyramid.at(octave).at(level);
 }
 
 std::vector<Mat> GaussPyramid::Diff_of_Gauss(std::vector<Mat> gaussians) {
