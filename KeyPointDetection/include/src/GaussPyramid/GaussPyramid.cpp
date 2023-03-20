@@ -112,7 +112,7 @@ void GaussPyramid::createPyramid(Mat& img) {
 //    remove the last 4 non-useful feature layers (1x1, 2x2, 4x4, 8x8)... 9 - 4 = 5 octaves over the images.
 //see: https://stackoverflow.com/questions/30291398/vlfeat-computation-of-number-of-octaves-for-sift
 //     https://www.researchgate.net/post/Can_any_one_help_me_understand_Deeply_SIFT
-int GaussPyramid::calculateNumOctaves(Mat& img) {
+void GaussPyramid::calculateNumOctaves(Mat& img) {
     this->numOctaves_ = floor(log2(min(img.rows, img.cols))) - 4;
 }
 
@@ -120,6 +120,10 @@ int GaussPyramid::calculateNumOctaves(Mat& img) {
 //the second portion this->sigma_* pow(this->k_, level) tracks which level were on.
 double GaussPyramid::calculateSigma(int level) {
     return pow(2,this->currentOctave_)*this->sigma_*pow( this->k_, level);
+}
+
+const double GaussPyramid::calculateSigma(int octave, int level) {
+    return pow(2,octave)*this->sigma_*pow( this->k_, level);
 }
 
 
@@ -131,7 +135,7 @@ std::vector<Mat> GaussPyramid::GaussVector(Mat& img) {
 
     //instead of consecutively blurring the image, first calculate the sigma value for that blurred level..
     for (int i = 0; i < this->numLevels_; ++i) {
-        sigmas[i] = calculateSigma(i);       //maybe track it in some other organized way. NOTE: This is incorrect, as the sigmas pyramid is filling itself up with the previous data still included.
+        sigmas[i] = calculateSigma(i);
         
 
         //edit this part to instead blur given the sigma of the current level.

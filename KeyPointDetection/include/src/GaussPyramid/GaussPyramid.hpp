@@ -24,6 +24,7 @@ class GaussPyramid
         const int getNumLevels() { return this->numLevels_; }
         //octave getters.
         const double getSigmaAt(int octave, int level);
+        const double calculateSigma(int octave, int level);
         const Mat& octaveImage(int octave) { return this->img_pyramid.at(octave); }
         const std::vector<double>& octaveSigma(int octave) { return this->sigmas_pyramid.at(octave); }
         const std::vector<Mat>& octaveBlur(int octave) { return this->gauss_pyramid.at(octave); }
@@ -44,7 +45,7 @@ class GaussPyramid
         static void showOctave(const std::vector<Mat> images, const std::string window_name, const Point pos = Point(0,0));
         static void showPyramid(const std::map<int, std::vector<Mat>> pyramid);
     private:
-        int calculateNumOctaves(Mat& img);
+        void calculateNumOctaves(Mat& img);
         double calculateSigma(int level);
         void createPyramid(Mat& img);
         void processGradients(std::vector<Mat> gaussians);

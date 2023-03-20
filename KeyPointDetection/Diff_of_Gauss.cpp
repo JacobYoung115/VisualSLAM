@@ -24,11 +24,12 @@ then, go back and look at the imgproc tutorials and see ways I can optimize this
 */
 namespace SLAM {
     struct point {
-        point(int row_, int col_, int value_, int padding_) : row(row_), col(col_), value(value_), padding(padding_) {}
+        point(int row_, int col_, int value_, int padding_, double scale_) : row(row_), col(col_), value(value_), padding(padding_), scale(scale_) {}
         int row;
         int col;
         int value;
         int padding;
+        double scale;   //scale will only specify the sigma value at the current level.
     };
 
     struct ImgRegion {
@@ -164,16 +165,22 @@ void DrawKeypoint(Mat& img, Point center, int radius=3, Scalar color = Scalar(0,
     }
 }
 
+
+//What if instead I create a mostly loaded keypoint, pass that in and then just return a keypoint.
+//
+
 //It filters out additional points by interpolating between positions and scale space to approximate a 3D surface.
 //We do this with the derivative of the pixel w/ respect to x,y and scale directions.
 //effectively this means taking the difference of points in:
 //  x-1,        x+1 direction
 //  y-1,        y+1 direction
 //  adjacent-1, adjacent+1 direction
-void FeaturePointLocalization(std::vector<Mat>& dogs_padded, std::vector<SLAM::point>& keypoints, int i, int j, int this_pixel, int padding) {
-    int d_x = (int)dogs_padded[1].at<uchar>(i,j-1) - (int)dogs_padded[1].at<uchar>(i,j+1);
-    int d_y = (int)dogs_padded[1].at<uchar>(i-1,j) - (int)dogs_padded[1].at<uchar>(i + 1,j);
-    int d_scale = (int)dogs_padded[0].at<uchar>(i,j) - (int)dogs_padded[2].at<uchar>(i,j);
+bool FeaturePointLocalization(std::vector<Mat>& dogs_padded, std::vector<SLAM::point>& keypoints, int level, SLAM::point& point) {
+    int i = point.row;
+    int j = point.col;
+    int d_x = (int)dogs_padded[level].at<uchar>(i,j-1) - (int)dogs_padded[level].at<uchar>(i,j+1);
+    int d_y = (int)dogs_padded[level].at<uchar>(i-1,j) - (int)dogs_padded[level].at<uchar>(i + 1,j);
+    int d_scale = (int)dogs_padded[level-1].at<uchar>(i,j) - (int)dogs_padded[level+1].at<uchar>(i,j);
 
     //Now, Perform 'Feature Point Localization'
     //Note that in the SIFT paper, they consider intensity values less than 0.03 in the scale of [0-1] to be low contrast
@@ -186,18 +193,24 @@ void FeaturePointLocalization(std::vector<Mat>& dogs_padded, std::vector<SLAM::p
     Mat B = A*A_T;              //A (3x1) * A^T (1x3) = 3x3 matrix.
     Mat B_inverse = -(B.inv());
     Mat z_hat = B_inverse * A;        //3x3 * 3x1 = 3x1 vector
-    Mat dog_zhat_mat = ((float)this_pixel / 255.0f) + 0.5f * A_T * z_hat;
+    Mat dog_zhat_mat = ((float)point.value / 255.0f) + 0.5f * A_T * z_hat;
 
     float dog_zhat = dog_zhat_mat.at<float>(0,0);
     
     if (dog_zhat > 0.03f) {     //if the value is above 0.03, then it is a high enough contrast point.
-        keypoints.emplace_back( SLAM::point{i,j,(int)(dog_zhat * 255), padding});
+        point.value = (int)(dog_zhat * 255.0f);
+        keypoints.emplace_back(point);
+        return true;  
     }
+    return false;
 }
 
 //aka Scale Space Extrema Detection
-std::vector<SLAM::point> initialKeypointDetection(const std::vector<Mat>& dogs, int windowSize) {
+std::vector<SLAM::point> initialKeypointDetection(GaussPyramid& pyramid, int octave, int windowSize) {
+    const std::vector<Mat>& dogs = pyramid.octaveDiff(octave);
     std::vector<SLAM::point> keypoints;
+
+    cout << "size of dogs: " << dogs.size() << endl;
 
     int padding = (windowSize-1) / 2;
     std::vector<Mat> dogs_padded;
@@ -207,33 +220,40 @@ std::vector<SLAM::point> initialKeypointDetection(const std::vector<Mat>& dogs, 
         dogs_padded.emplace_back(std::move(paddedDoG));        //not sure if this is adding the refence to the old image or copying a new image in.
     }
 
-    //now compare adjacent DoGs to obtain 26 neighbors dogs[i-1], dogs[i], dogs[i+1]
-    //add padding of size 'kernelsize' to the image
-    for (int i = padding; i < dogs[0].rows; i += windowSize) {
-        for (int j = padding; j < dogs[0].cols; j += windowSize) {
-            std::vector<int> neighbors;
-            int this_pixel = (int)dogs_padded[1].at<uchar>(i,j);
-            
-            //now take a window of the surrounding 26 neighbors 3x3 neighbors in adjacent smoothing directions.
-            for (int u = i-padding; u < i+padding; u++) {
-                for (int v = j - padding; v < j+padding; v++) {
-                    //this is the window. add all neighbbors to
-                    neighbors.emplace_back((int)dogs_padded[0].at<uchar>(u,v));
-                    neighbors.emplace_back((int)dogs_padded[1].at<uchar>(u,v));
-                    neighbors.emplace_back((int)dogs_padded[2].at<uchar>(u,v));
+    //adjust it to work with all dogs padded images, not just the first 3
+    //from our 5 dogs images, we will create 3 scale samples
+    for (int level=1; level < dogs.size()-1; level++) {
+        //now compare adjacent DoGs to obtain 26 neighbors dogs[i-1], dogs[i], dogs[i+1]
+        //add padding of size 'kernelsize' to the image
+        for (int i = padding; i < dogs[0].rows; i += windowSize) {
+            for (int j = padding; j < dogs[0].cols; j += windowSize) {
+                std::vector<int> neighbors;
+                int this_pixel = (int)dogs_padded[level].at<uchar>(i,j);
+                
+                //now take a window of the surrounding 26 neighbors 3x3 neighbors in adjacent smoothing directions.
+                for (int u = i-padding; u < i+padding; u++) {
+                    for (int v = j - padding; v < j+padding; v++) {
+                        //this is the window. add all neighbbors to
+                        neighbors.emplace_back((int)dogs_padded[level-1].at<uchar>(u,v));
+                        neighbors.emplace_back((int)dogs_padded[level].at<uchar>(u,v));
+                        neighbors.emplace_back((int)dogs_padded[level+1].at<uchar>(u,v));
+                    }
+                }
+
+                int min = *min_element(neighbors.begin(), neighbors.end());
+                int max = *max_element(neighbors.begin(), neighbors.end());
+
+                
+                //if pixel is a local max or minima, intepolate the extreme in x,y & scale space.
+                if (this_pixel == min || this_pixel == max) {
+                    //https://www.youtube.com/watch?v=LXk4A24V8mQ
+                    SLAM::point local_extrema(i,j,this_pixel, padding, pyramid.getSigmaAt(octave, level));
+                    bool added = FeaturePointLocalization(dogs_padded, keypoints, level, local_extrema);
                 }
             }
-
-            int min = *min_element(neighbors.begin(), neighbors.end());
-            int max = *max_element(neighbors.begin(), neighbors.end());
-
-            
-            //if pixel is a local max or minima, intepolate the extreme in x,y & scale space.
-            if (this_pixel == min || this_pixel == max) {
-                //https://www.youtube.com/watch?v=LXk4A24V8mQ
-                FeaturePointLocalization(dogs_padded, keypoints, i, j, this_pixel, padding);
-            }
         }
+
+
     }
 
     return keypoints;
@@ -308,7 +328,7 @@ std::vector<SLAM::point> filterKeypoints(SLAM::ProcessedImage myImages, std::vec
                 if (histo.at(k) > peakThreshold) {
                     int angle = k * 10;
                     //here, k*10 gives the angle at that point. Additional peaks at different angles will generate new keypoints.
-                    reducedKeypoints.emplace_back( SLAM::point{y,x,angle,0});
+                    reducedKeypoints.emplace_back( SLAM::point{y,x,angle,0,0});
                     //DoG1.at<uchar>(y,x) = (uchar)255;       //note, y is row, x is col.
 
                     //draw a circle around each reduced keypoint                  
@@ -339,6 +359,7 @@ void PostProcessing(Mat& color, Mat& blurred, SLAM::ProcessedImage& myImages) {
     int delta = 0;
     int ddepth = CV_32F;        //16bit signed (short)
 
+    //TODO: SIFT paper calculates these for every level of the pyramid 
     Sobel(myImages.blurred, myImages.grad_x, ddepth, 1, 0, ksize, scale, delta, BORDER_DEFAULT);
     Sobel(myImages.blurred, myImages.grad_y, ddepth, 0, 1, ksize, scale, delta, BORDER_DEFAULT);
     magnitude(myImages.grad_x, myImages.grad_y, myImages.magnitude);
@@ -356,68 +377,42 @@ int main() {
     // = imread(img_path, IMREAD_GRAYSCALE);
 
     int numOctaves = 4; //this represents the s variable in SIFT.
-    float pyr_sigma = 1.6f;                        //paper states a pyr_sigma of 1.6
-    std::string octave_window = "Octave 3 Blurs";
-    GaussPyramid pyramid{img, numOctaves, pyr_sigma};
-
+    double pyr_sigma = 1.6;                        //paper states a pyr_sigma of 1.6
     
-    for (const auto& kv: pyramid.gaussPyramid()) {
+    //the pyramid now contains images (resized), blurs, diffs, magnitude values and sigmas per level.
+    GaussPyramid pyramid{img, numOctaves, pyr_sigma};
+    
+    for (const auto& kv: pyramid.pyramidGauss()) {
         cout << "Pyramid level: " << kv.first << endl;
         //cout << "size of data: " << kv.second.size() << endl;
         cout << "image size: width.height (" << kv.second.at(0).cols << ", " << kv.second.at(0).rows << ")" << endl;
     }
-    GaussPyramid::showOctave(pyramid.getBlurOctave(2), octave_window);
+
+    std::string octave_window = "Octave 3 Blurs";
+    GaussPyramid::showOctave(pyramid.octaveBlur(2), octave_window);
     
 
    //TODO: Now, replace the code which uses individual images, to use the full pyramid.
-
-    //now that image is loaded, blur it.
-    Mat blurred1;
-    Mat blurred2;
-    Mat blurred3;
-    Mat blurred4;
-    Mat blurred5;
-
     SLAM::ProcessedImage myImages;
     myImages.grey = img;
-    
 
-    //octave 1 (original image size)
-    GaussianBlur(img, blurred1, Size(3,3), 0, 0, BORDER_DEFAULT);       //consider adjusting the sigmaX and sigmaY values.
-    PostProcessing(img_color, blurred1, myImages);                      //need to adjust the post-processing struct to work w/ pyramid.
-    
-    GaussianBlur(img, blurred2, Size(5,5), 0, 0, BORDER_DEFAULT);
-    GaussianBlur(img, blurred3, Size(7,7), 0, 0, BORDER_DEFAULT);
-    GaussianBlur(img, blurred4, Size(9,9), 0, 0, BORDER_DEFAULT);
-    GaussianBlur(img, blurred5, Size(11,11), 0, 0, BORDER_DEFAULT);
-
-    //subtract blurred images.
-    Mat DoG1 = blurred1 - blurred2;
-    Mat DoG2 = blurred2 - blurred3;
-    Mat DoG3 = blurred3 - blurred4;
-    Mat DoG4 = blurred4 - blurred5;
-
-
-    //The Gaussian Pyramid can be a map (dictionary), where the key is the octave
-    //while the value is the list of blurred images.
-
-    
-    
-    //const std::vector<Mat> dogs = { DoG1, DoG2, DoG3, DoG4};
 
     int windowSize = 3;
     //note, it should actually take in the dogs list, rather than the padded.
     //std::vector<SLAM::point> keypoints = initialKeypointDetection(dogs, windowSize);
     
-    std::vector<SLAM::point> keypoints = initialKeypointDetection(pyramid.getDiffOctave(0), windowSize);
+    int octave = 0;
+    std::vector<SLAM::point> keypoints = initialKeypointDetection(pyramid, octave, windowSize);
 
 
     std::cout << "Number of keypoints (new method): " << keypoints.size() << std::endl;
 
-    std::vector<SLAM::point> reducedKeypoints = filterKeypoints(myImages, keypoints);
-    std::cout << "Number of keypoints after edge orientation: " << reducedKeypoints.size() << std::endl;
+
+    //std::vector<SLAM::point> reducedKeypoints = filterKeypoints(myImages, keypoints);
+    //std::cout << "Number of keypoints after edge orientation: " << reducedKeypoints.size() << std::endl;
 
 
+    /*
     //Now that we have the appropriately filtered keypoints, which have a dominant orientation..
     //iterate through each keypoint, take it's primary orientation and rotate a box
     //sample the neighborhood included in the rotated box.
@@ -425,7 +420,7 @@ int main() {
     //1.414f is sqrt(2), which is used to pad an image according to the 
     //hypotaneuse of a square window, rather than by width & height.
     int maxPadding = ceil(float(windowSize) * 1.414f / 2.0f);
-    int sigma = 1.5*3;                  //Update this later!!       
+    int sigma = 1.5*3; //Use this to blur the magnitude window. Note it will be 1.5x the sigma of the scale of the keypoint.    
     std::vector<Point2i> rotatedPoints;
     Point2i currentPoint;
     Mat paddedImg3;
@@ -464,13 +459,16 @@ int main() {
         //TODO:
         // The magnitudes are further weighted by a Gaussian function with sigma  equal to one half the width of the descriptor window.
         // The descriptor then becomes a vector of all the values of these histograms
+        //TODO: just blurring the magwindow is not correct. It must only be blurred with a single convolution
+        //centered on the window.
+        //!!! The paper uses sigma interchangably with radius
+        //"A gaussian weighting function w/ sigma = (1/2)*window_width is used to assign a weight to the mag
+        //of each sample point"
         GaussianBlur(magROI, magWeighted, Size(0, 0), sigma, 0, BORDER_DEFAULT); 
 
-        /*
         imshow("rotated img ROI", imgROI);
         imshow("ROI Magnitude", mat2gray(magROI));
         imshow("ROI Orientation",mat2gray(orientROI));
-        */
 
 
         //then, create a histrogram of gradients for each 4x4 section of the ROI
@@ -528,6 +526,8 @@ int main() {
         break;
     }
 
+    */
+
 
 
     //imshow("SobelX", grad_x);
@@ -535,15 +535,11 @@ int main() {
     //imshow("Magnitude", mat2gray(mag));
     //imshow("Orientation",mat2gray(orient));
     //imshow("DoG1", DoG1);
-    imshow("Img", myImages.color);
+    imshow("Img", img_color);
     moveWindow("Img", 0, 0);
-    imshow("Padded img w/ lines", paddedImg3);
-    moveWindow("Padded img w/ lines", 0, myImages.color.rows);
+    //imshow("Padded img w/ lines", paddedImg3);
+    //moveWindow("Padded img w/ lines", 0, myImages.color.rows);
     int k = waitKey(0);
-
-    if (k == 's') {
-        imwrite("DoG1.jpg", DoG1);
-    }
 
     return 0;
 
