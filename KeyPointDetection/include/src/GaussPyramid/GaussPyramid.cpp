@@ -34,16 +34,6 @@ using std::cout, std::endl;
 //https://math.stackexchange.com/questions/3159846/what-is-the-resulting-sigma-after-applying-successive-gaussian-blur
 //for development sake though, it will just be fastest to blur each previous image.
 
-
-void GaussPyramid::displayPyramid(const std::map<int, std::vector<Mat>> pyramid) {
-    std::string window_name;
-    for (const auto& kv: pyramid) {
-        window_name = "Octave " + std::to_string(kv.first) + " blur";
-        GaussPyramid::showOctave(kv.second, window_name, Point(kv.second.at(0).cols, 0));
-    }
-}
-
-
 //it may be useful to display the current octave number along with the sigma value of each image in the octave.
 void GaussPyramid::showOctave(const std::vector<Mat> images, const std::string window_name, const Point pos) {
     Mat display;
@@ -55,6 +45,37 @@ void GaussPyramid::showOctave(const std::vector<Mat> images, const std::string w
 
     imshow(window_name, display);
     moveWindow(window_name, pos.x, pos.y);
+}
+
+void GaussPyramid::showPyramid(const std::map<int, std::vector<Mat>> pyramid) {
+    std::string window_name;
+    for (const auto& kv: pyramid) {
+        window_name = "Octave " + std::to_string(kv.first) + " blur";
+        GaussPyramid::showOctave(kv.second, window_name, Point(kv.second.at(0).cols, 0));
+    }
+}
+
+void GaussPyramid::processGradients(std::vector<Mat> gaussians) {
+    int ksize = 1;
+    int scale = 1;
+    int delta = 0;
+    int ddepth = CV_32F;
+
+    std::vector<Mat> xGradients{gaussians.size(), Mat::zeros(gaussians[0].size(), ddepth)};
+    std::vector<Mat> yGradients{gaussians.size(), Mat::zeros(gaussians[0].size(), ddepth)};
+    std::vector<Mat> gradMags{gaussians.size(), Mat::zeros(gaussians[0].size(), ddepth)};
+    std::vector<Mat> gradOrients{gaussians.size(), Mat::zeros(gaussians[0].size(), ddepth)};
+
+    for (int i = 0; i < gaussians.size(); ++i) {
+        Sobel(gaussians[i], xGradients[i], ddepth, 1, 0, ksize, scale, delta, BORDER_DEFAULT);
+        Sobel(gaussians[i], yGradients[i], ddepth, 0, 1, ksize, scale, delta, BORDER_DEFAULT);
+        magnitude(xGradients[i], yGradients[i], gradMags[i]);
+        phase(xGradients[i], yGradients[i], gradOrients[i], true);
+    }
+    this->grad_x_pyramid.emplace(this->currentOctave_, xGradients);
+    this->grad_y_pyramid.emplace(this->currentOctave_, yGradients);
+    this->grad_mag_pyramid.emplace(this->currentOctave_, gradMags);
+    this->grad_orient_pyramid.emplace(this->currentOctave_, gradOrients);
 }
 
 void GaussPyramid::createPyramid(Mat& img) {
@@ -69,6 +90,7 @@ void GaussPyramid::createPyramid(Mat& img) {
         //allocate 6 empty images to move the data over.
         std::vector<Mat> gaussians = GaussVector(pyrBase);
         std::vector<Mat> diffs = Diff_of_Gauss(gaussians);
+        processGradients(gaussians);
         this->img_pyramid.emplace_back(pyrBase);                //TODO: Does the image pyramid need to contain unblurred images??
 
         //The SIFT paper states that, they take a gaussian image w/ twice the initial value of sigma, this corresponds to
@@ -94,15 +116,6 @@ int GaussPyramid::calculateNumOctaves(Mat& img) {
     this->numOctaves_ = floor(log2(min(img.rows, img.cols))) - 4;
 }
 
-const int GaussPyramid::getNumOctaves() {
-    return this->numOctaves_;
-}
-
-//returns the number of levels (the number of times an octave is divided into gaussian images).
-const int GaussPyramid::getNumLevels() {
-    return this->numLevels_;
-}
-
 //the first portion pow(2, this->currentOctave) keeps track of the doubling value of each octave. At octave 0, it will be 1
 //the second portion this->sigma_* pow(this->k_, level) tracks which level were on.
 double GaussPyramid::calculateSigma(int level) {
@@ -113,27 +126,26 @@ double GaussPyramid::calculateSigma(int level) {
 //see: https://dsp.stackexchange.com/questions/10074/sift-why-s3-scales-per-octave
 std::vector<Mat> GaussPyramid::GaussVector(Mat& img) {
     std::vector<Mat> gaussians{this->numLevels_, Mat::zeros(img.size(), CV_32FC1)};
+    std::vector<double> sigmas(this->numLevels_, 0.0);
     Mat blurred;
 
     //instead of consecutively blurring the image, first calculate the sigma value for that blurred level..
     for (int i = 0; i < this->numLevels_; ++i) {
-        double sigma = calculateSigma(i);
-        this->sigmas_.emplace_back(sigma);        //maybe track it in some other organized way.
+        sigmas[i] = calculateSigma(i);       //maybe track it in some other organized way. NOTE: This is incorrect, as the sigmas pyramid is filling itself up with the previous data still included.
         
 
         //edit this part to instead blur given the sigma of the current level.
-        GaussianBlur(img, blurred, Size(0,0), sigma, 0, BORDER_DEFAULT);
+        GaussianBlur(img, blurred, Size(0,0), sigmas[i], 0, BORDER_DEFAULT);
         
         //cv::swap(blurred, gaussians[i]);     //note that swap is just slightly slower (by .1~1 miliseconds)
         gaussians[i] = std::move(blurred);
         //each iteration, take the previous blurred image & blur it again.
     }
-    this->sigmas_pyramid.emplace(this->currentOctave_, this->sigmas_);
+    this->sigmas_pyramid.emplace(this->currentOctave_, sigmas);
     return gaussians;
 }
 
 const double GaussPyramid::getSigmaAt(int octave, int level) {
-    //TODO: correctly access the sigmas pyramid or vector
     return this->sigmas_pyramid.at(octave).at(level);
 }
 

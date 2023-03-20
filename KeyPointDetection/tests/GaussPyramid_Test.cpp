@@ -2,6 +2,14 @@
 using namespace cv;
 using std::cout, std::endl;
 
+Mat mat2gray(const cv::Mat& src)
+{
+    Mat dst;
+    normalize(src, dst, 0.0, 255.0, cv::NORM_MINMAX, CV_8U);
+
+    return dst;
+}
+
 double compareImages(Mat& img1, Mat& img2) {
     double total = 0;
     double divisor = img1.rows * img1.cols;
@@ -75,21 +83,18 @@ int main() {
     double sigma = 1.6;                        //paper states a sigma of 1.6
     GaussPyramid pyramid{img, numOctaves, sigma};
 
-    //Take a gaussian pyramid
-    //manually calculate each level of the pyramid's sigma value.
-    //see how similar the calculation is, to the successively blurred image sequence.
-    for (const auto& kv: pyramid.gaussPyramid()) {
+    //0. Check that the pyramid has levels equivalent to number of octaves
+    cout << "Number of expected octaves: " << pyramid.getNumOctaves() << endl;
+    cout << "Number of expected levels per octave: " << pyramid.getNumLevels() << endl;
+    for (const auto& kv: pyramid.pyramidGauss()) {
         cout << "Pyramid level: " << kv.first << endl;
-        //cout << "size of data: " << kv.second.size() << endl;
+        cout << "number of levels: " << kv.second.size() << endl;
         cout << "image size: width.height (" << kv.second.at(0).cols << ", " << kv.second.at(0).rows << ")" << endl;
-        
-        //calculate the sigma value for every level of every octave
     }
+    cout << endl;
 
-    std::vector<double> sigmas;
-    std::vector<Mat> octave_1 = pyramid.getBlurOctave(0);
-    int num_levels = octave_1.size();
 
+    //1. Verify that the sigma values return the correct values.
     double mySigma = pyramid.getSigmaAt(0,0);
     cout << "First sigma value of pyramid : " << mySigma << endl;
 
@@ -99,12 +104,28 @@ int main() {
     double mySigma_doubled = pyramid.getSigmaAt(0,pyramid.getNumLevels()-3);
     cout << "double sigma value : " << mySigma_doubled << endl;
 
+
+    //2. verify the pyramid holds the correct number of sigma values.
+    cout << "Number of sigma values per octave: " << pyramid.octaveSigma(numOctaves-1).size() << endl;
+
+
+    //3. Verify that the pyramid correctly contains the magnitude images
+    Mat gradX = pyramid.octaveGradX(1).at(0);
+    Mat gradY = pyramid.octaveGradY(1).at(0);
+    Mat gradMag = pyramid.octaveGradMag(1).at(0);
+    Mat gradOrient = pyramid.octaveGradOrient(1).at(0);
+
+    imshow("grad X", gradX);
+    imshow("grad Y", gradY);
+    imshow("magnitude", mat2gray(gradMag));
+    imshow("orientation",mat2gray(gradOrient));
+
     
     //https://stackoverflow.com/questions/9905093/how-to-check-whether-two-matrices-are-identical-in-opencv
     //bool areIdentical = !cv::norm(downsized,downsized2,NORM_L1);
     //cout << "Downsized images equal?: " << areIdentical << endl;
 
-    imshow("original image: ", img);        //erroring here for some reason..
+    imshow("original image: ", img);
     moveWindow("original image: ", 0,0);
 
     //imshow("downsampled image: ", downsized);
@@ -119,7 +140,7 @@ int main() {
 
     std::string octave_window2 = "Octave 2 Blurs";
     //it may be useful for showOctave to print both the octave number and sigma value at that image.
-    GaussPyramid::showOctave(pyramid.getBlurOctave(2), octave_window2);
+    GaussPyramid::showOctave(pyramid.octaveBlur(2), octave_window2);
 
     //std::string octave_window3 = "Octave 3 Blurs";
     //GaussPyramid::showOctave(pyramid.getBlurOctave(3), octave_window3);

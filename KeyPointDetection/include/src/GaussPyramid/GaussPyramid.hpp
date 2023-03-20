@@ -18,32 +18,46 @@ class GaussPyramid
         GaussPyramid(Mat& img, double sigma) : sigma_{sigma} {
             this->calculateNumOctaves(img);
             this->createPyramid(img);
-        } 
-        const std::vector<Mat>& imagePyramid() { return this->img_pyramid; }
-        const std::map<int, std::vector<Mat>>& gaussPyramid() { return this->gauss_pyramid; }
-        const std::map<int, std::vector<Mat>>& diffPyramid() { return this->diff_pyramid; }
-        const Mat& getOctave(int octave) { return this->img_pyramid.at(octave); }
-        const int getNumOctaves();
-        const int getNumLevels();
+        }
+        //member variable getters
+        const int getNumOctaves() { return this->numOctaves_; }
+        const int getNumLevels() { return this->numLevels_; }
+        //octave getters.
         const double getSigmaAt(int octave, int level);
-        const std::vector<Mat>& getBlurOctave(int octave) { return this->gauss_pyramid.at(octave); }
-        const std::vector<Mat>& getDiffOctave(int octave) { return this->diff_pyramid.at(octave); }
-        const std::vector<double>& getSigmaValues() { return this->sigmas_; }
-        static void displayPyramid(const std::map<int, std::vector<Mat>> pyramid);
+        const Mat& octaveImage(int octave) { return this->img_pyramid.at(octave); }
+        const std::vector<double>& octaveSigma(int octave) { return this->sigmas_pyramid.at(octave); }
+        const std::vector<Mat>& octaveBlur(int octave) { return this->gauss_pyramid.at(octave); }
+        const std::vector<Mat>& octaveDiff(int octave) { return this->diff_pyramid.at(octave); }
+        const std::vector<Mat>& octaveGradX(int octave) { return this->grad_x_pyramid.at(octave); }
+        const std::vector<Mat>& octaveGradY(int octave) { return this->grad_y_pyramid.at(octave); }
+        const std::vector<Mat>& octaveGradMag(int octave) { return this->grad_mag_pyramid.at(octave); }
+        const std::vector<Mat>& octaveGradOrient(int octave) { return this->grad_orient_pyramid.at(octave); }
+        //pyramid getters
+        const std::vector<Mat>& imagePyramid() { return this->img_pyramid; }
+        const std::map<int, std::vector<Mat>>& pyramidGauss() { return this->gauss_pyramid; }
+        const std::map<int, std::vector<Mat>>& pyramidDiff() { return this->diff_pyramid; }
+        const std::map<int, std::vector<Mat>>& pyramidGradX() { return this->grad_x_pyramid; }
+        const std::map<int, std::vector<Mat>>& pyramidGradY() { return this->grad_y_pyramid; }
+        const std::map<int, std::vector<Mat>>& pyramidGradMag() { return this->grad_mag_pyramid; }
+        const std::map<int, std::vector<Mat>>& pyramidGradOrient() { return this->grad_orient_pyramid; }
+        //display functions
         static void showOctave(const std::vector<Mat> images, const std::string window_name, const Point pos = Point(0,0));
-        //lastly, we need the scale (i.e. sigma value) for every level of each octave
-        //create a way to access the sigma value of the current image, given the octave & level.
+        static void showPyramid(const std::map<int, std::vector<Mat>> pyramid);
     private:
         int calculateNumOctaves(Mat& img);
         double calculateSigma(int level);
         void createPyramid(Mat& img);
-        std::vector<double> sigmas_;
+        void processGradients(std::vector<Mat> gaussians);
         std::vector<Mat> GaussVector(Mat& img);
         std::vector<Mat> Diff_of_Gauss(std::vector<Mat> gaussians);
         std::vector<Mat> img_pyramid;
+        std::map<int, std::vector<double>> sigmas_pyramid;
         std::map<int, std::vector<Mat>> gauss_pyramid;
         std::map<int, std::vector<Mat>> diff_pyramid;
-        std::map<int, std::vector<double>> sigmas_pyramid;
+        std::map<int, std::vector<Mat>> grad_x_pyramid;
+        std::map<int, std::vector<Mat>> grad_y_pyramid;
+        std::map<int, std::vector<Mat>> grad_mag_pyramid;
+        std::map<int, std::vector<Mat>> grad_orient_pyramid;
         int numOctaves_ = 0;
         int scaleSamples_ = 3;
         int numLevels_ = scaleSamples_ + 3;
