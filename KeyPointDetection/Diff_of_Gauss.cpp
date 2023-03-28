@@ -24,12 +24,13 @@ then, go back and look at the imgproc tutorials and see ways I can optimize this
 */
 namespace SLAM {
     struct point {
-        point(int row_, int col_, int value_, int padding_, double scale_) : row(row_), col(col_), value(value_), padding(padding_), scale(scale_) {}
+        point(int row_, int col_, int value_, int padding_, int octave_, int level_) : row(row_), col(col_), value(value_), padding(padding_), octave(octave_), level(level_) {}
         int row;
         int col;
         int value;
         int padding;
-        double scale;   //scale will only specify the sigma value at the current level.
+        int octave;
+        int level;
     };
 
     struct ImgRegion {
@@ -62,7 +63,7 @@ Mat mat2gray(const cv::Mat& src)
 }
 
 //Use the Hessian structure matrix to filter out keypoints which correspond only to edges.
-float computeEdgeResponse(const SLAM::point& keypoint, Mat& grad_x, Mat& grad_y) {
+float computeEdgeResponse(const SLAM::point& keypoint, const Mat& grad_x, const Mat& grad_y) {
     //at each keypoint, accumulate the derivatives
     float Ix2 = 0;
     float Iy2 = 0;
@@ -166,9 +167,6 @@ void DrawKeypoint(Mat& img, Point center, int radius=3, Scalar color = Scalar(0,
 }
 
 
-//What if instead I create a mostly loaded keypoint, pass that in and then just return a keypoint.
-//
-
 //It filters out additional points by interpolating between positions and scale space to approximate a 3D surface.
 //We do this with the derivative of the pixel w/ respect to x,y and scale directions.
 //effectively this means taking the difference of points in:
@@ -206,19 +204,13 @@ bool FeaturePointLocalization(std::vector<Mat>& dogs_padded, std::vector<SLAM::p
 }
 
 //aka Scale Space Extrema Detection
-std::vector<SLAM::point> initialKeypointDetection(GaussPyramid& pyramid, int octave, int windowSize) {
+void initialKeypointDetection(std::vector<SLAM::point>& keypoints, GaussPyramid& pyramid, int octave, int windowSize) {
     const std::vector<Mat>& dogs = pyramid.octaveDiff(octave);
-    std::vector<SLAM::point> keypoints;
-
+    
     cout << "size of dogs: " << dogs.size() << endl;
 
     int padding = (windowSize-1) / 2;
-    std::vector<Mat> dogs_padded;
-    for (const auto& dog : dogs) {
-        Mat paddedDoG;
-        copyMakeBorder(dog, paddedDoG, padding, padding, padding, padding, BORDER_REPLICATE);
-        dogs_padded.emplace_back(std::move(paddedDoG));        //not sure if this is adding the refence to the old image or copying a new image in.
-    }
+    std::vector<Mat> dogs_padded = GaussPyramid::padOctave(padding, dogs);
 
     //adjust it to work with all dogs padded images, not just the first 3
     //from our 5 dogs images, we will create 3 scale samples
@@ -247,7 +239,7 @@ std::vector<SLAM::point> initialKeypointDetection(GaussPyramid& pyramid, int oct
                 //if pixel is a local max or minima, intepolate the extreme in x,y & scale space.
                 if (this_pixel == min || this_pixel == max) {
                     //https://www.youtube.com/watch?v=LXk4A24V8mQ
-                    SLAM::point local_extrema(i,j,this_pixel, padding, pyramid.getSigmaAt(octave, level));
+                    SLAM::point local_extrema(i,j,this_pixel, padding, octave, level);
                     bool added = FeaturePointLocalization(dogs_padded, keypoints, level, local_extrema);
                 }
             }
@@ -255,32 +247,37 @@ std::vector<SLAM::point> initialKeypointDetection(GaussPyramid& pyramid, int oct
 
 
     }
-
-    return keypoints;
 }
 
 
 //keypoints are first filtered by removing any points which correspond to edges or flat regions.
-std::vector<SLAM::point> filterKeypoints(SLAM::ProcessedImage myImages, std::vector<SLAM::point>& keypoints) {
+void filterKeypoints(Mat& img_color, GaussPyramid& pyramid, int octave, std::vector<SLAM::point>& keypoints, std::vector<SLAM::point>& reducedKeypoints) {
     //Now, further filter the keypoints using the Hessian
     int extrema = 0;
-    int windowSize2 = 16;
-    int padding2 = windowSize2/2;
-    int sigma = 1.5*3;                  //later, update this to by 1.5x the scale of the keypoint.
-    std::vector<SLAM::point> reducedKeypoints;
-    
+    int windowSize = 16;
+    int padding = windowSize/2;
 
-    Mat paddedImg2;
-    cv::copyMakeBorder(myImages.grey, paddedImg2, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
-    Mat paddedMag;
-    cv::copyMakeBorder(myImages.magnitude, paddedMag, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
-    Mat paddedOrient;
-    cv::copyMakeBorder(myImages.orientation, paddedOrient, padding2, padding2, padding2, padding2, BORDER_REPLICATE);
+    //the SIFT paper states
+    /*
+        The scale of the keypoint is used to select the Gaussian smoothed image, L, with the closest scale, 
+        so that all computations are performed in a scale-invariant manner. For each image sample, L(x, y), at this
+        scale, the gradient magnitude, m(x, y), and orientation, θ(x, y), is precomputed using pixel differences:
+
+        In my case, this means that using the octave and level is the correct approach to selecting a ROI 
+        of the calculated gradient mag & orientation
+    */
+
+   //How can I avoid padding the images? Do I just need to precompute it in the gaussian pyramid?
+    std::vector<Mat> paddedBlurs = GaussPyramid::padOctave(padding, pyramid.octaveBlur(octave));
+    std::vector<Mat> paddedMags = GaussPyramid::padOctave(padding, pyramid.octaveGradMag(octave));
+    std::vector<Mat> paddedOrients = GaussPyramid::padOctave(padding, pyramid.octaveGradOrient(octave));
 
     for (const auto& keypoint : keypoints) {
         int x = keypoint.col;
         int y = keypoint.row;
-        float response = computeEdgeResponse(keypoint, myImages.grad_x, myImages.grad_y);
+        float response = computeEdgeResponse(keypoint, 
+                                            pyramid.octaveGradX(octave).at(keypoint.level), 
+                                            pyramid.octaveGradY(octave).at(keypoint.level));
         float r = 10.0f;
         float threshold = ((r + 1.0f) * (r + 1.0f)) / r;
 
@@ -289,31 +286,17 @@ std::vector<SLAM::point> filterKeypoints(SLAM::ProcessedImage myImages, std::vec
             extrema++;
 
             //create a 16x16 window around the current pixel.
-            Mat window (paddedImg2, Rect(x, y, windowSize2, windowSize2));
-            Mat windowMag (paddedMag, Rect(x, y, windowSize2, windowSize2));
-            Mat windowOrient (paddedOrient, Rect(x, y, windowSize2, windowSize2));
+            Mat window (paddedBlurs.at(keypoint.level), Rect(x, y, windowSize, windowSize));
+            Mat windowMag (paddedMags.at(keypoint.level), Rect(x, y, windowSize, windowSize));
+            Mat windowOrient (paddedOrients.at(keypoint.level), Rect(x, y, windowSize, windowSize));
 
             Mat magWeighted;
+            double sigma = 1.5 * pyramid.getSigmaAt(keypoint.octave, keypoint.level);                  //later, update this to by 1.5x the scale of the keypoint.
             //note, it might be faster to calculate the orientation & magnitude using just the img window
             GaussianBlur(windowMag, magWeighted, Size(0, 0), sigma, 0, BORDER_DEFAULT);        //note: the scale used here will need to adapt to the scale of the DoG Octave.
 
-            /*
-                Now, create a histrogram with this data
-                36 bins for orientation
-                weight each point w/ a Gaussian window of 1.5 sigma
-                --> this could be done by taking a gaussian function the size of the image region (16x16) and multiplying the values by the gaussian value
-                    at that point, then dividing the values by the highest value of the gaussian (1).
-                
-                //How are the values of the bins decided? Well, the magnitude tells the strength at the point of the angle
-                //so the magnitude image will need to be weighted
-                //But, once we have the magnitudes weighted, how do they add to the histogram?
-
-                //so it seems the histogram doesn't just count the number of angles which appear at that angle
-                //it also takes into account the total magnitude at that angle.
-            */
-
             //Calculates a histogram of directions. Size controls the amount of degrees between each bin.
-            //ex: size = 36 --> 360 / 36  --> 36 bins each of 10 degrees.
+            //ex: size = 36 --> 360 / 10  --> 36 bins each of 10 degrees.
             int size = 36;
             SLAM::ImgRegion region = {0, 0, window.rows, window.cols};
             std::vector<float> histo = orientationHistogram(size, region, magWeighted, windowOrient);
@@ -328,17 +311,15 @@ std::vector<SLAM::point> filterKeypoints(SLAM::ProcessedImage myImages, std::vec
                 if (histo.at(k) > peakThreshold) {
                     int angle = k * 10;
                     //here, k*10 gives the angle at that point. Additional peaks at different angles will generate new keypoints.
-                    reducedKeypoints.emplace_back( SLAM::point{y,x,angle,0,0});
+                    reducedKeypoints.emplace_back( SLAM::point{y, x, angle, 0, keypoint.octave, keypoint.level});
                     //DoG1.at<uchar>(y,x) = (uchar)255;       //note, y is row, x is col.
 
                     //draw a circle around each reduced keypoint                  
-                    DrawKeypoint(myImages.color, Point(x,y), 9, Scalar(0,255,255), angle, true);
+                    DrawKeypoint(img_color, Point(x,y), 9, Scalar(0,255,255), angle, true);
                 }
             }
         }
     }
-
-    return reducedKeypoints;
 }
 
 
@@ -382,12 +363,6 @@ int main() {
     //the pyramid now contains images (resized), blurs, diffs, magnitude values and sigmas per level.
     GaussPyramid pyramid{img, numOctaves, pyr_sigma};
     
-    for (const auto& kv: pyramid.pyramidGauss()) {
-        cout << "Pyramid level: " << kv.first << endl;
-        //cout << "size of data: " << kv.second.size() << endl;
-        cout << "image size: width.height (" << kv.second.at(0).cols << ", " << kv.second.at(0).rows << ")" << endl;
-    }
-
     std::string octave_window = "Octave 3 Blurs";
     GaussPyramid::showOctave(pyramid.octaveBlur(2), octave_window);
     
@@ -397,19 +372,24 @@ int main() {
     myImages.grey = img;
 
 
-    int windowSize = 3;
-    //note, it should actually take in the dogs list, rather than the padded.
-    //std::vector<SLAM::point> keypoints = initialKeypointDetection(dogs, windowSize);
-    
-    int octave = 0;
-    std::vector<SLAM::point> keypoints = initialKeypointDetection(pyramid, octave, windowSize);
+    int windowSize = 3;    
+    //now that it is working for all levels of a single octave, extend it to work on the entire pyramid.
+    std::vector<SLAM::point> reducedKeypoints;
+    for (const auto& kv: pyramid.pyramidGauss()) {
+        std::vector<SLAM::point> keypoints;
+        int octave = kv.first;
+        cout << "Pyramid octave: " << kv.first << endl;
+        initialKeypointDetection(keypoints, pyramid, octave, windowSize);
+        cout << "image size: width.height (" << kv.second.at(0).cols << ", " << kv.second.at(0).rows << ")" << endl;
+        filterKeypoints(img_color, pyramid, octave, keypoints, reducedKeypoints);
+    }
 
 
-    std::cout << "Number of keypoints (new method): " << keypoints.size() << std::endl;
+    //std::cout << "Number of keypoints (new method): " << keypoints.size() << std::endl;
 
 
     //std::vector<SLAM::point> reducedKeypoints = filterKeypoints(myImages, keypoints);
-    //std::cout << "Number of keypoints after edge orientation: " << reducedKeypoints.size() << std::endl;
+    std::cout << "Number of keypoints after edge orientation: " << reducedKeypoints.size() << std::endl;
 
 
     /*

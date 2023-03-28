@@ -105,6 +105,16 @@ void GaussPyramid::createPyramid(Mat& img) {
     }
 }
 
+std::vector<Mat> GaussPyramid::padOctave(int padding, const std::vector<Mat>& images) {
+    std::vector<Mat> padded;
+    for (const auto& image : images) {
+        Mat paddedImg;
+        copyMakeBorder(image, paddedImg, padding, padding, padding, padding, BORDER_REPLICATE);
+        padded.emplace_back(std::move(paddedImg));        //not sure if this is adding the refence to the old image or copying a new image in.
+    }
+    return padded;
+}
+
 //The maximum number of octaves in an image is set by taking the smaller dimension of width&height
 //then, taking log base 2 of that number, which gives the maximum number of times an image can be divided in half.
 //dividing an image down further than 32x32 isn't necessarily useful though, so we subtract the max # of octaves by 4.

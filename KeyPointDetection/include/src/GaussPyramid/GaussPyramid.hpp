@@ -22,6 +22,7 @@ class GaussPyramid
         //member variable getters
         const int getNumOctaves() { return this->numOctaves_; }
         const int getNumLevels() { return this->numLevels_; }
+        const int getNumScaleSamples() { return this->scaleSamples_; }
         //octave getters.
         const double getSigmaAt(int octave, int level);
         const double calculateSigma(int octave, int level);
@@ -41,6 +42,7 @@ class GaussPyramid
         const std::map<int, std::vector<Mat>>& pyramidGradY() { return this->grad_y_pyramid; }
         const std::map<int, std::vector<Mat>>& pyramidGradMag() { return this->grad_mag_pyramid; }
         const std::map<int, std::vector<Mat>>& pyramidGradOrient() { return this->grad_orient_pyramid; }
+        static std::vector<Mat> padOctave(int padding, const std::vector<Mat>& images);
         //display functions
         static void showOctave(const std::vector<Mat> images, const std::string window_name, const Point pos = Point(0,0));
         static void showPyramid(const std::map<int, std::vector<Mat>> pyramid);
