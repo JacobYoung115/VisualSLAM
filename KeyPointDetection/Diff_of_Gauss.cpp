@@ -251,7 +251,7 @@ void initialKeypointDetection(std::vector<SLAM::point>& keypoints, GaussPyramid&
 
 
 //keypoints are first filtered by removing any points which correspond to edges or flat regions.
-void filterKeypoints(Mat& img_color, GaussPyramid& pyramid, int octave, std::vector<SLAM::point>& keypoints, std::vector<SLAM::point>& reducedKeypoints) {
+void filterKeypoints(GaussPyramid& pyramid, int octave, std::vector<SLAM::point>& keypoints, std::vector<SLAM::point>& reducedKeypoints) {
     //Now, further filter the keypoints using the Hessian
     int extrema = 0;
     int windowSize = 16;
@@ -313,129 +313,65 @@ void filterKeypoints(Mat& img_color, GaussPyramid& pyramid, int octave, std::vec
                     //here, k*10 gives the angle at that point. Additional peaks at different angles will generate new keypoints.
                     reducedKeypoints.emplace_back( SLAM::point{y, x, angle, 0, keypoint.octave, keypoint.level});
                     //DoG1.at<uchar>(y,x) = (uchar)255;       //note, y is row, x is col.
-
-                    //draw a circle around each reduced keypoint                  
-                    DrawKeypoint(img_color, Point(x,y), 9, Scalar(0,255,255), angle, true);
                 }
             }
         }
     }
 }
 
-
-//need a function to handle the difference of gaussian pyramids.
-
-
-//all image preprocessing should be done in a single function.
-void PostProcessing(Mat& color, Mat& blurred, SLAM::ProcessedImage& myImages) {
-    myImages.color = color;
-    //cvtColor(myImages.color, myImages.grey, COLOR_BGR2GRAY);
-    myImages.blurred = blurred;
-    //myImages.grey = img;
-    
-    //For DoG we also need the deriv in x&y directions, to additionally calculate the gradient direction
-    //derivs
-    int ksize = 1;
-    int scale = 1;
-    int delta = 0;
-    int ddepth = CV_32F;        //16bit signed (short)
-
-    //TODO: SIFT paper calculates these for every level of the pyramid 
-    Sobel(myImages.blurred, myImages.grad_x, ddepth, 1, 0, ksize, scale, delta, BORDER_DEFAULT);
-    Sobel(myImages.blurred, myImages.grad_y, ddepth, 0, 1, ksize, scale, delta, BORDER_DEFAULT);
-    magnitude(myImages.grad_x, myImages.grad_y, myImages.magnitude);
-    phase(myImages.grad_x, myImages.grad_y, myImages.orientation, true);
-}
-
-int main() {
-
-    std::string img_path = samples::findFile("building.jpg");
-    std::string img_path2 = samples::findFile("chessboard.png");
-
-    Mat img_color = imread(img_path, IMREAD_COLOR);
-    Mat img;
-    cvtColor(img_color, img, COLOR_BGR2GRAY);
-    // = imread(img_path, IMREAD_GRAYSCALE);
-
-    int numOctaves = 4; //this represents the s variable in SIFT.
-    double pyr_sigma = 1.6;                        //paper states a pyr_sigma of 1.6
-    
-    //the pyramid now contains images (resized), blurs, diffs, magnitude values and sigmas per level.
-    GaussPyramid pyramid{img, numOctaves, pyr_sigma};
-    
-    std::string octave_window = "Octave 3 Blurs";
-    GaussPyramid::showOctave(pyramid.octaveBlur(2), octave_window);
-    
-
-   //TODO: Now, replace the code which uses individual images, to use the full pyramid.
-    SLAM::ProcessedImage myImages;
-    myImages.grey = img;
-
-
-    int windowSize = 3;    
-    //now that it is working for all levels of a single octave, extend it to work on the entire pyramid.
-    std::vector<SLAM::point> reducedKeypoints;
-    for (const auto& kv: pyramid.pyramidGauss()) {
-        std::vector<SLAM::point> keypoints;
-        int octave = kv.first;
-        cout << "Pyramid octave: " << kv.first << endl;
-        initialKeypointDetection(keypoints, pyramid, octave, windowSize);
-        cout << "image size: width.height (" << kv.second.at(0).cols << ", " << kv.second.at(0).rows << ")" << endl;
-        filterKeypoints(img_color, pyramid, octave, keypoints, reducedKeypoints);
-    }
-
-
-    //std::cout << "Number of keypoints (new method): " << keypoints.size() << std::endl;
-
-
-    //std::vector<SLAM::point> reducedKeypoints = filterKeypoints(myImages, keypoints);
-    std::cout << "Number of keypoints after edge orientation: " << reducedKeypoints.size() << std::endl;
-
-
-    /*
+ void SIFT(std::vector<SLAM::point>& reducedKeypoints, std::vector<std::vector<float>>& featureDescriptors_vec, GaussPyramid& pyramid, int octave) {
     //Now that we have the appropriately filtered keypoints, which have a dominant orientation..
     //iterate through each keypoint, take it's primary orientation and rotate a box
     //sample the neighborhood included in the rotated box.
     int windowSize3 = 16;
     //1.414f is sqrt(2), which is used to pad an image according to the 
     //hypotaneuse of a square window, rather than by width & height.
-    int maxPadding = ceil(float(windowSize) * 1.414f / 2.0f);
-    int sigma = 1.5*3; //Use this to blur the magnitude window. Note it will be 1.5x the sigma of the scale of the keypoint.    
+    int maxPadding = ceil(float(windowSize3) * 1.414f / 2.0f);
+    
     std::vector<Point2i> rotatedPoints;
     Point2i currentPoint;
-    Mat paddedImg3;
-    Mat paddedMag3;
-    Mat paddedOrient3;
-    copyMakeBorder(myImages.grey, paddedImg3, maxPadding, maxPadding, maxPadding, maxPadding, BORDER_REPLICATE);
-    copyMakeBorder(myImages.magnitude, paddedMag3, maxPadding, maxPadding, maxPadding, maxPadding, BORDER_REPLICATE);
-    copyMakeBorder(myImages.orientation, paddedOrient3, maxPadding, maxPadding, maxPadding, maxPadding, BORDER_REPLICATE);
-    std::vector<std::vector<float>> featureDescriptors_vec;
 
+    std::vector<Mat> paddedBlurs = GaussPyramid::padOctave(maxPadding, pyramid.octaveBlur(octave));
+    std::vector<Mat> paddedMags = GaussPyramid::padOctave(maxPadding, pyramid.octaveGradMag(octave));
+    std::vector<Mat> paddedOrients = GaussPyramid::padOctave(maxPadding, pyramid.octaveGradOrient(octave));
+
+    //std::vector<std::vector<float>> featureDescriptors_vec;
     for (const auto& keypoint : reducedKeypoints) {
+        int level = keypoint.level;
+        Mat levelImg = paddedBlurs.at(keypoint.level);
+        Mat levelMag = paddedMags.at(keypoint.level);
+        Mat levelOrient = paddedOrients.at(keypoint.level);
+        
+        //if we need to use these coordinates (of the real image) multiple times, then it might be best to get those instead.
+        rotatedPoints = SLAM::Rotation::getRotatedWindowPoints(
+            levelImg, 
+            Point2i(keypoint.col + maxPadding, keypoint.row + maxPadding), 
+            windowSize3, 
+            keypoint.value
+        );
+        
+        
+        //assume given region is correct. Now get the img, gradient magnitude & orientation of this window.
+        Mat imgROI = Mat::zeros(Size(windowSize3, windowSize3), levelImg.type());
+        Mat magROI = Mat::zeros(Size(windowSize3, windowSize3), levelMag.type());
+        Mat orientROI = Mat::zeros(Size(windowSize3, windowSize3), levelOrient.type());
+
+        DrawBoundingBox(levelImg, rotatedPoints);
+        
         std::vector<float> featureDescriptor;      //maybe should just make this an array of floats.
         featureDescriptor.reserve(128);
-        //if we need to use these coordinates (of the real image) multiple times, then it might be best to get those instead.
-        rotatedPoints = SLAM::Rotation::getRotatedWindowPoints(paddedImg3, Point2i(keypoint.col + maxPadding, keypoint.row + maxPadding), windowSize3, keypoint.value);
-        //assume given region is correct. Now get the img, gradient magnitude & orientation of this window.
-        Mat imgROI = Mat::zeros(Size(windowSize3, windowSize3), paddedImg3.type());
-        Mat magROI = Mat::zeros(Size(windowSize3, windowSize3), paddedMag3.type());
-        Mat orientROI = Mat::zeros(Size(windowSize3, windowSize3), paddedOrient3.type());
-
-        DrawBoundingBox(paddedImg3, rotatedPoints);
-        
         for (int i = 0; i < imgROI.rows; ++i) {
             for (int j = 0; j < imgROI.cols; ++j) {
 
                 //TODO: Be careful here.. there was a segmentation fault, I swaped the x & y's & that seemed to
                 //made the error go away..
                 currentPoint = rotatedPoints[i * imgROI.rows + j];
-                imgROI.at<uchar>(i,j) = paddedImg3.at<uchar>(currentPoint.x, currentPoint.y);
-                magROI.at<float>(i,j) = paddedMag3.at<float>(currentPoint.x, currentPoint.y);
-                orientROI.at<float>(i,j) = paddedOrient3.at<float>(currentPoint.x, currentPoint.y);
+                imgROI.at<uchar>(i,j) = levelImg.at<uchar>(currentPoint.x, currentPoint.y);
+                magROI.at<float>(i,j) = levelMag.at<float>(currentPoint.x, currentPoint.y);
+                orientROI.at<float>(i,j) = levelOrient.at<float>(currentPoint.x, currentPoint.y);
             }
         }
 
-        Mat magWeighted;
         //TODO:
         // The magnitudes are further weighted by a Gaussian function with sigma  equal to one half the width of the descriptor window.
         // The descriptor then becomes a vector of all the values of these histograms
@@ -444,6 +380,9 @@ int main() {
         //!!! The paper uses sigma interchangably with radius
         //"A gaussian weighting function w/ sigma = (1/2)*window_width is used to assign a weight to the mag
         //of each sample point"
+        //Use this to blur the magnitude window. Note it will be 1.5x the sigma of the scale of the keypoint.
+        double sigma = 1.5*pyramid.getSigmaAt(keypoint.octave, level); 
+        Mat magWeighted;
         GaussianBlur(magROI, magWeighted, Size(0, 0), sigma, 0, BORDER_DEFAULT); 
 
         imshow("rotated img ROI", imgROI);
@@ -505,8 +444,87 @@ int main() {
         //final step is graphing and comparing two images with each other.
         break;
     }
+}
 
+
+//need a function to handle the difference of gaussian pyramids.
+
+
+//all image preprocessing should be done in a single function.
+void PostProcessing(Mat& color, Mat& blurred, SLAM::ProcessedImage& myImages) {
+    myImages.color = color;
+    //cvtColor(myImages.color, myImages.grey, COLOR_BGR2GRAY);
+    myImages.blurred = blurred;
+    //myImages.grey = img;
+    
+    //For DoG we also need the deriv in x&y directions, to additionally calculate the gradient direction
+    //derivs
+    int ksize = 1;
+    int scale = 1;
+    int delta = 0;
+    int ddepth = CV_32F;        //16bit signed (short)
+
+    //TODO: SIFT paper calculates these for every level of the pyramid 
+    Sobel(myImages.blurred, myImages.grad_x, ddepth, 1, 0, ksize, scale, delta, BORDER_DEFAULT);
+    Sobel(myImages.blurred, myImages.grad_y, ddepth, 0, 1, ksize, scale, delta, BORDER_DEFAULT);
+    magnitude(myImages.grad_x, myImages.grad_y, myImages.magnitude);
+    phase(myImages.grad_x, myImages.grad_y, myImages.orientation, true);
+}
+
+int main() {
+
+    std::string img_path = samples::findFile("building.jpg");
+    std::string img_path2 = samples::findFile("chessboard.png");
+
+    Mat img_color = imread(img_path, IMREAD_COLOR);
+    Mat img;
+    cvtColor(img_color, img, COLOR_BGR2GRAY);
+    // = imread(img_path, IMREAD_GRAYSCALE);
+
+    int numOctaves = 4; //this represents the s variable in SIFT.
+    double pyr_sigma = 1.6;                        //paper states a pyr_sigma of 1.6
+    
+    //the pyramid now contains images (resized), blurs, diffs, magnitude values and sigmas per level.
+    GaussPyramid pyramid{img, numOctaves, pyr_sigma};
+    
+    std::string octave_window = "Octave 3 Blurs";
+    GaussPyramid::showOctave(pyramid.octaveBlur(2), octave_window);
+    
+
+   //TODO: Now, replace the code which uses individual images, to use the full pyramid.
+    SLAM::ProcessedImage myImages;
+    myImages.grey = img;
+
+
+    int windowSize = 3;    
+    //now that it is working for all levels of a single octave, extend it to work on the entire pyramid.
+    
+    std::vector<std::vector<float>> featureDescriptors_vec;
+    for (const auto& kv: pyramid.pyramidGauss()) {
+        std::vector<SLAM::point> keypoints;
+        std::vector<SLAM::point> reducedKeypoints;
+        int octave = kv.first;
+        cout << "Pyramid octave: " << kv.first << endl;
+        initialKeypointDetection(keypoints, pyramid, octave, windowSize);
+        cout << "image size: width.height (" << kv.second.at(0).cols << ", " << kv.second.at(0).rows << ")" << endl;
+        filterKeypoints(pyramid, octave, keypoints, reducedKeypoints);
+        SIFT(reducedKeypoints, featureDescriptors_vec, pyramid, octave);
+        break;
+    }
+
+    /*
+    //draw the keypoints.
+    for (const auto& keypoint : reducedKeypoints) {
+        //draw a circle around each reduced keypoint                  
+        DrawKeypoint(img_color, Point(keypoint.col,keypoint.row), 9, Scalar(0,255,255), keypoint.value, true);
+    }
+ 
+    std::cout << "Number of keypoints after edge orientation: " << reducedKeypoints.size() << std::endl;
     */
+
+   
+
+    
 
 
 
