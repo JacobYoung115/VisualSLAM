@@ -726,11 +726,15 @@ void recalculateSize(SLAM::point& point) {
 
 int main() {
 
-    std::string img_path = samples::findFile("building.jpg");
-    std::string img_path2 = samples::findFile("chessboard.png");
-    std::string img_path3 = samples::findFile("home.jpg");
+    //don't use samples, instead read in the file from images directory.
+    Mat img_color = imread("../images/building.jpg", IMREAD_COLOR); 
+    //samples::findFile("building.jpg");
+    Mat img_path2 = imread("../images/chessboard.png", IMREAD_COLOR); 
+    //= samples::findFile("chessboard.png");
+    Mat img_path3 = imread("../images/home.jpg", IMREAD_COLOR); 
+    //= samples::findFile("home.jpg");
 
-    Mat img_color = imread(img_path3, IMREAD_COLOR);
+    //Mat img_color = imread(img_path3, IMREAD_COLOR);
     Mat img;
     cvtColor(img_color, img, COLOR_BGR2GRAY);
     // = imread(img_path, IMREAD_GRAYSCALE);
