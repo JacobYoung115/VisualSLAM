@@ -33,6 +33,13 @@ using std::cout, std::endl;
 //this will probably be the fastest method.
 //https://math.stackexchange.com/questions/3159846/what-is-the-resulting-sigma-after-applying-successive-gaussian-blur
 //for development sake though, it will just be fastest to blur each previous image.
+Mat mat2gray_float(const cv::Mat& src)
+{
+    Mat dst;
+    normalize(src, dst, 0.0, 1.0, cv::NORM_MINMAX, CV_32F);
+
+    return dst;
+}
 
 //it may be useful to display the current octave number along with the sigma value of each image in the octave.
 void GaussPyramid::showOctave(const std::vector<Mat> images, const std::string window_name, const Point pos) {
@@ -43,7 +50,7 @@ void GaussPyramid::showOctave(const std::vector<Mat> images, const std::string w
         vconcat(display, images[i], display);
     }
 
-    imshow(window_name, display);
+    imshow(window_name, mat2gray_float(display));
     moveWindow(window_name, pos.x, pos.y);
 }
 
@@ -56,22 +63,40 @@ void GaussPyramid::showPyramid(const std::map<int, std::vector<Mat>> pyramid) {
 }
 
 void GaussPyramid::processGradients(std::vector<Mat> gaussians) {
+    //cout << "Processing image gradients" << endl;
+    //hmm, according to my study, this part shouldn't actually be working. The values should be overwritten.
+    //it seemed to be necessary to use a temporary variable w/ copying to make this actually work.
+    //Try to fix this.
+
     int ksize = 1;
     int scale = 1;
     int delta = 0;
     int ddepth = CV_32F;
 
-    std::vector<Mat> xGradients{gaussians.size(), Mat::zeros(gaussians[0].size(), ddepth)};
-    std::vector<Mat> yGradients{gaussians.size(), Mat::zeros(gaussians[0].size(), ddepth)};
-    std::vector<Mat> gradMags{gaussians.size(), Mat::zeros(gaussians[0].size(), ddepth)};
-    std::vector<Mat> gradOrients{gaussians.size(), Mat::zeros(gaussians[0].size(), ddepth)};
+    std::vector<Mat> xGradients;
+    std::vector<Mat> yGradients;
+    std::vector<Mat> gradMags;
+    std::vector<Mat> gradOrients;
+
+    Mat sobelX;
+    Mat sobelY;
+    Mat mag;
+    Mat orient;
 
     for (int i = 0; i < gaussians.size(); ++i) {
-        Sobel(gaussians[i], xGradients[i], ddepth, 1, 0, ksize, scale, delta, BORDER_DEFAULT);
-        Sobel(gaussians[i], yGradients[i], ddepth, 0, 1, ksize, scale, delta, BORDER_DEFAULT);
-        magnitude(xGradients[i], yGradients[i], gradMags[i]);
-        phase(xGradients[i], yGradients[i], gradOrients[i], true);
+        Sobel(gaussians[i], sobelX, ddepth, 1, 0, ksize, scale, delta, BORDER_DEFAULT);
+        xGradients.emplace_back(sobelX.clone());
+
+        Sobel(gaussians[i], sobelY, ddepth, 0, 1, ksize, scale, delta, BORDER_DEFAULT);
+        yGradients.emplace_back(sobelY.clone());
+
+        magnitude(xGradients[i], yGradients[i], mag);
+        gradMags.emplace_back(mag.clone());
+
+        phase(xGradients[i], yGradients[i], orient, true);
+        gradOrients.emplace_back(orient.clone());
     }
+
     this->grad_x_pyramid.emplace(this->currentOctave_, xGradients);
     this->grad_y_pyramid.emplace(this->currentOctave_, yGradients);
     this->grad_mag_pyramid.emplace(this->currentOctave_, gradMags);
@@ -110,7 +135,7 @@ std::vector<Mat> GaussPyramid::padOctave(int padding, const std::vector<Mat>& im
     for (const auto& image : images) {
         Mat paddedImg;
         copyMakeBorder(image, paddedImg, padding, padding, padding, padding, BORDER_REPLICATE);
-        padded.emplace_back(std::move(paddedImg));        //not sure if this is adding the refence to the old image or copying a new image in.
+        padded.emplace_back(paddedImg.clone());        //not sure if this is adding the refence to the old image or copying a new image in.
     }
     return padded;
 }
@@ -139,7 +164,7 @@ const double GaussPyramid::calculateSigma(int octave, int level) {
 
 //see: https://dsp.stackexchange.com/questions/10074/sift-why-s3-scales-per-octave
 std::vector<Mat> GaussPyramid::GaussVector(Mat& img) {
-    std::vector<Mat> gaussians{this->numLevels_, Mat::zeros(img.size(), CV_32FC1)};
+    std::vector<Mat> gaussians{this->numLevels_, Mat::zeros(img.size(), CV_32F)};
     std::vector<double> sigmas(this->numLevels_, 0.0);
     Mat blurred;
 
@@ -165,7 +190,7 @@ const double GaussPyramid::getSigmaAt(int octave, int level) {
 
 std::vector<Mat> GaussPyramid::Diff_of_Gauss(std::vector<Mat> gaussians) {
     //now, get a vector of difference of gaussians.
-    std::vector<Mat> diffs{gaussians.size()-1, Mat::zeros(gaussians[0].size(), CV_32FC1)};
+    std::vector<Mat> diffs{gaussians.size()-1, Mat::zeros(gaussians[0].size(), CV_32F)};
     for (int i = 1; i < gaussians.size(); i++) {
         //start i =1, therefore we can always grab the previous gaussian.
          //moving it mighttt be the problem? Since it's an rvalue in the first place and we're moving to an lvalue?
