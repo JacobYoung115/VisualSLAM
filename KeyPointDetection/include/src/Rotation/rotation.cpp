@@ -121,7 +121,7 @@ std::vector<Point2i> Rotation::getRotatedWindowPoints(Mat& I, const Point2i& cen
     rotatedPoints.reserve(windowSize*windowSize);
     for (int i = windowStart.y; i <= windowEnd.y; ++i) {
         for (int j = windowStart.x; j <= windowEnd.x; ++j) {
-            pt_rotated = rotate_pt_CW(Point2i(j,i), center, angles);
+            pt_rotated = rotate_pt_CW(Point2i(j,i), center, angles);        //notice the point is x, y
             rotatedPoints.emplace_back(pt_rotated);
         }
     }

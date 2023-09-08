@@ -20,8 +20,9 @@ const char* window_name2 = "Rotate Point";
 const char* trackbar_pt_rotation = "Rotation";
 
 //read in an image from OpenCV samples.
-std::string img_string = samples::findFile("blox.jpg");
-Mat img = imread(img_string, IMREAD_GRAYSCALE);
+//std::string img_string = samples::findFile("blox.jpg");
+//Mat img = imread(img_string, IMREAD_GRAYSCALE);
+Mat img = imread("../images/blox.jpg", IMREAD_GRAYSCALE);
 int rotation = 0;
 int pt_rotation = 0;
 int maxRotation = 360;

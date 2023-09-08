@@ -74,8 +74,9 @@ int main() {
     cout << "Minor version : " << CV_MINOR_VERSION << endl;
     cout << "Subminor version : " << CV_SUBMINOR_VERSION << endl;
 
-    std::string img_path = samples::findFile("building.jpg");
-    Mat img_color = imread(img_path, IMREAD_COLOR);
+    //std::string img_path = samples::findFile("building.jpg");
+    Mat img_color = imread("../images/building.jpg", IMREAD_COLOR);
+    //Mat img_color = imread(img_path, IMREAD_COLOR);
     Mat img;
     cvtColor(img_color, img, COLOR_BGR2GRAY);
 
